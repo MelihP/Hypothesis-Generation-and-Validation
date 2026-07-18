@@ -1,21 +1,54 @@
 import os
 from langchain_community.utilities.sql_database import SQLDatabase
 from langchain_community.agent_toolkits import create_sql_agent
-from langchain_groq import ChatGroq
+from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+from langchain_pinecone import PineconeVectorStore
+# Hatalı eski kütüphane yerine, doğrudan ana çekirdek aracı (Tool) çağırıyoruz
+from langchain_core.tools import Tool
 
-# Groq API Anahtarını Buraya Yapıştır
-os.environ["GROQ_API_KEY"] = ""
+# --- 1. API ANAHTARLARI (GÜVENLİK BÖLGESİ) ---
+os.environ["OPENAI_API_KEY"] = "BURAYA_KENDI_OPENAI_ANAHTARINIZI_YAZIN"
+os.environ["PINECONE_API_KEY"] = "BURAYA_KENDI_PINECONE_ANAHTARINIZI_YAZIN"
 
-db = SQLDatabase.from_uri("sqlite:///insight_generation_bot.db")
 
-# LLM Motorunu Groq (Llama 3 70B) olarak ayağa kaldır
-llm = ChatGroq(model="llama-3.3-70b-versatile", temperature=0)
+def get_hybrid_agent():
+    # --- 2. SQL BAĞLANTISI (Sayılar ve Tablolar için) ---
+    db = SQLDatabase.from_uri("sqlite:///insight_generation_bot.db")
+    
+    # --- 3. YAPAY ZEKA BEYNİ VE VEKTÖR MOTORU ---
+    llm = ChatOpenAI(model="gpt-4o", temperature=0)
+    embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
 
-agent_executor = create_sql_agent(llm, db=db, agent_type="tool-calling", verbose=True)
+    # --- 4. RAG BAĞLANTISI (Metinler ve PDF'ler için) ---
+    # Pinecone'daki index adını buraya yazmayı unutma
+    index_name = "pazarlama-verileri" 
+    
+    try:
+        vectorstore = PineconeVectorStore(index_name=index_name, embedding=embeddings)
+        retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
+        
+        # IMPORT HATASINI KÖKÜNDEN ÇÖZEN YENİ KOD BLOĞU:
+        # Aracı dışarıdan çağırmak yerine, Tool sınıfıyla sıfırdan kendimiz yaratıyoruz
+        rag_tool = Tool(
+            name="dokuman_arama_araci",
+            description="Markanın iade politikaları, PDF raporları veya SQL veritabanında OLMAYAN yapılandırılmamış (unstructured) metinleri araştırmak için bu aracı kullan.",
+            func=retriever.invoke
+        )
+        ekstra_araclar = [rag_tool]
+        print("✅ RAG Aracı başarıyla sisteme entegre edildi!")
+    except Exception as e:
+        print(f"⚠️ RAG sistemine bağlanılamadı, sadece SQL aracı devrede. Hata: {e}")
+        ekstra_araclar = []
 
-test_sorusu = "18-29 yaş grubundaki kullanıcılar veritabanında toplam kaç kişi? Bana net sayıyı ver."
-print(f"\nSoru: {test_sorusu}\n")
+    # --- 5. HİBRİT AJAN OLUŞTURMA (SQL + RAG) ---
+    agent_executor = create_sql_agent(
+        llm=llm,
+        db=db,
+        agent_type="openai-tools",
+        extra_tools=ekstra_araclar,
+        verbose=False
+    )
+    
+    return db, llm, agent_executor
 
-response = agent_executor.invoke({"input": test_sorusu})
-print("\n--- AJANIN CEVABI ---")
-print(response["output"])
+db, llm, agent_executor = get_hybrid_agent()
