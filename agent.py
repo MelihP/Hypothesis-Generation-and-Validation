@@ -7,8 +7,8 @@ from langchain_pinecone import PineconeVectorStore
 from langchain_core.tools import Tool
 
 # --- 1. API ANAHTARLARI (GÜVENLİK BÖLGESİ) ---
-os.environ["OPENAI_API_KEY"] = "BURAYA_KENDI_OPENAI_ANAHTARINIZI_YAZIN"
-os.environ["PINECONE_API_KEY"] = "BURAYA_KENDI_PINECONE_ANAHTARINIZI_YAZIN"
+os.environ["OPENAI_API_KEY"] = "xxxxx"
+os.environ["PINECONE_API_KEY"] = "xxxxx"
 
 
 def get_hybrid_agent():
