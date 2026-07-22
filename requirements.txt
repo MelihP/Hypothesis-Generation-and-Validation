@@ -1,0 +1,10 @@
+streamlit
+langchain
+langchain-core
+langchain-openai
+langchain-pinecone
+langchain-community
+plotly
+pandas
+tiktoken
+sqlalchemy
