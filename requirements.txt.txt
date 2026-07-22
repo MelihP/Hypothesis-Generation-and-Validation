@@ -1,9 +1,0 @@
-streamlit
-langchain
-langchain-openai
-langchain-pinecone
-langchain-community
-plotly
-pandas
-tiktoken
-sqlalchemy
