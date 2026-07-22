@@ -5,10 +5,17 @@ from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_pinecone import PineconeVectorStore
 # Hatalı eski kütüphane yerine, doğrudan ana çekirdek aracı (Tool) çağırıyoruz
 from langchain_core.tools import Tool
-
+import streamlit as st
 # --- 1. API ANAHTARLARI (GÜVENLİK BÖLGESİ) ---
-os.environ["OPENAI_API_KEY"] = "xxxxx"
-os.environ["PINECONE_API_KEY"] = "xxxxx"
+
+
+
+# --- 1. API ANAHTARLARI (GÜVENLİK BÖLGESİ - KASADAN ÇEKİLİYOR) ---
+# Artık şifreler kodda yazmıyor, Streamlit'in güvenli sunucusundan geliyor
+os.environ["OPENAI_API_KEY"] = st.secrets["OPENAI_API_KEY"]
+os.environ["PINECONE_API_KEY"] = st.secrets["PINECONE_API_KEY"]
+
+
 
 
 def get_hybrid_agent():
