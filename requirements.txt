@@ -1,10 +1,9 @@
 streamlit
+pandas
+plotly
 langchain
+langchain-community
 langchain-core
 langchain-openai
 langchain-pinecone
-langchain-community
-plotly
-pandas
-tiktoken
-sqlalchemy
+pinecone-client
