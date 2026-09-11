@@ -1,274 +1,519 @@
 import streamlit as st
-from langchain_core.prompts import PromptTemplate
-# Modüler mimari: Hibrit Ajanı (SQL + RAG) agent.py dosyasından çağırıyoruz!
-from agent import db, llm, agent_executor
-import json
-import plotly.express as px
 import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
+import json
+import re
 
-# --- WEB ARAYÜZÜ TASARIMI ---
-st.set_page_config(page_title="Hibrit Pazarlama İçgörü Motoru", page_icon="📊", layout="centered")
+# Dinamik motor fonksiyonu
+from agent import get_hybrid_agent
 
-st.title("📊 Gelişmiş Hibrit Analiz Platformu")
-st.markdown("""
-Bu sistem, hem **SQL veritabanınızı** (sayılar ve demografi) hem de **Kurumsal Dokümanlarınızı** (RAG/Pinecone) aynı anda tarayabilir. Otomatize hipotez doğrulama çerçevesi işleterek fikirlerinizi bilimsel olarak sınayabilirsiniz.
-""")
-st.divider()
-
-## --- 4 SEÇENEKLİ ÇALIŞMA MODU ---
-calisma_modu = st.radio(
-    "Çalışma Modunu Seçin:",
-    [
-        "🤖 Otonom İçgörü Modu", 
-        "👤 Manuel Soru Modu", 
-        "🧪 Hipotez Doğrulama Modu",
-        "🔮 Tahminleme (Predictive) Modu" # YENİ EKLENEN MOD
-    ],
-    horizontal=True
+# --- 1. SAYFA YAPILANDIRMASI ---
+st.set_page_config(
+    page_title="Enlighty AI - Strategic Marketing Insight Engine",
+    page_icon="📊",
+    layout="wide"
 )
 
-# Seçilen moda göre dinamik girdi alanları
-manuel_soru = ""
-if calisma_modu == "👤 Manuel Soru Modu":
-    manuel_soru = st.text_input("Pazarlama / Strateji sorunuzu buraya yazın:", placeholder="Örn: 18-29 yaş grubunun en çok şikayet ettiği ürün hangisi...")
-elif calisma_modu == "🧪 Hipotez Doğrulama Modu":
-    manuel_soru = st.text_input("Sınamak / doğrulamak istediğiniz ana fikri veya konuyu yazın:", placeholder="Örn: Genç kullanıcılar kargo süreçlerinden çok, dijital deneyimlerde sorun yaşıyor.")
-elif calisma_modu == "🔮 Tahminleme (Predictive) Modu":
-    manuel_soru = st.text_input("Gelecek projeksiyonunu görmek istediğiniz konuyu yazın:", placeholder="Örn: Önümüzdeki 3 ay içinde 'öfke' duygusundaki trend ne olacak?")
+st.title("📊 AI Destekli Pazarlama İçgörü Motoru")
+st.caption("Stratejik Kök Neden Analizi, Demografik Sentez ve Hipotez Doğrulama Platformu")
 
-st.write("") 
 
-if st.button("🚀 Analizi Başlat", use_container_width=True):
+# --- 2. SOL MENÜ: DİNAMİK MODEL SEÇİM PANELİ (TIERED ROUTING) ---
+st.sidebar.subheader("⚙️ Model Yapılandırması")
+
+profile_choice = st.sidebar.selectbox(
+    "Çalışma Profili Seçin:",
+    [
+        "⚡ Hibrit Mod (Önerilen)",
+        "🧠 Maksimum Hassasiyet",
+        "💸 Maksimum Tasarruf & Hız",
+        "🛠️ Özel Yapılandırma (Custom)"
+    ],
+    help="Sistemin sorgu planlama ve stratejik sentez adımlarında kullanacağı modelleri belirler."
+)
+
+if profile_choice == "⚡ Hibrit Mod (Önerilen)":
+    selected_fast_model = "gpt-4o-mini"
+    selected_reasoning_model = "gpt-4o"
+    profile_badge = "⚡ Hibrit (Mini + GPT-4o)"
+    profile_desc = "SQL/Sorgu motoru için hızlı `gpt-4o-mini`, stratejik yönetici sentezi için derin `gpt-4o` devrede."
+elif profile_choice == "🧠 Maksimum Hassasiyet":
+    selected_fast_model = "gpt-4o"
+    selected_reasoning_model = "gpt-4o"
+    profile_badge = "🧠 Full GPT-4o"
+    profile_desc = "Tüm aşamalarda en güçlü akıl yürütme modeli kullanılır. Maliyeti daha yüksektir."
+elif profile_choice == "💸 Maksimum Tasarruf & Hız":
+    selected_fast_model = "gpt-4o-mini"
+    selected_reasoning_model = "gpt-4o-mini"
+    profile_badge = "💸 Full GPT-4o-mini"
+    profile_desc = "Tüm süreçler `gpt-4o-mini` ile çalışır. Ultra hızlı ve %90 daha düşük API maliyeti sağlar."
+else:
+    c1, c2 = st.sidebar.columns(2)
+    with c1:
+        selected_fast_model = st.selectbox("1. Kademe (SQL):", ["gpt-4o-mini", "gpt-4o"])
+    with c2:
+        selected_reasoning_model = st.selectbox("2. Kademe (Sentez):", ["gpt-4o", "gpt-4o-mini"])
+    profile_badge = f"🛠️ Özel ({selected_fast_model} + {selected_reasoning_model})"
+    profile_desc = "Kullanıcı tanımlı model eşleştirmesi."
+
+st.sidebar.caption(profile_desc)
+
+# Seçilen modele göre motoru önbellekten yükleme
+@st.cache_resource(show_spinner=False)
+def load_app_engine(f_model: str, r_model: str):
+    return get_hybrid_agent(fast_model=f_model, reasoning_model=r_model)
+
+engine_bundle = load_app_engine(selected_fast_model, selected_reasoning_model)
+
+if len(engine_bundle) == 6:
+  (
+      db,
+      llm,
+      agent_executor,
+      query_agent,
+      rewrite_agent,
+      synthesis_engine,
+  ) = engine_bundle
+else:
+  # Önbellek eski 5'liyi döndürürse sistemi çökertmeden sentez motorunu tamamla
+  db, llm, agent_executor, query_agent, rewrite_agent = engine_bundle[:5]
+  try:
+    from agent import SynthesisEngine
+
+    synthesis_engine = SynthesisEngine(llm)
+  except Exception:
+    from agent import synthesis_engine
+
+st.sidebar.divider()
+st.sidebar.markdown(
+    f"""
+    **Aktif Motor:** `{profile_badge}`
+    - ⚡ *SQL / JSON:* `{selected_fast_model}`
+    - 🧠 *Strateji / Sentez:* `{selected_reasoning_model}`
     
-    if calisma_modu in ["👤 Manuel Soru Modu", "🧪 Hipotez Doğrulama Modu"] and not manuel_soru:
-        st.warning("Lütfen analizi başlatmadan önce ilgili alanı doldurun!")
-        st.stop()
-    
-    # -------------------------------------------------------------------------
-    # --- AKIŞ A: MOD 1 (OTONOM) & MOD 2 (MANUEL SORU) ---
-    # -------------------------------------------------------------------------
-    if calisma_modu in ["🤖 Otonom İçgörü Modu", "👤 Manuel Soru Modu"]:
-        
-        with st.status("🧠 1. Aşama: Stratejik makro soru yapılandırılıyor...", expanded=True) as status:
-            if calisma_modu == "🤖 Otonom İçgörü Modu":
-                short_D_info = "Bir markanın sosyal medya performansı, müşteri şikayetleri ve demografik bilgileri."
-                hl_prompt = PromptTemplate.from_template(
-                    "Sen uzman bir pazarlama direktörüsün. Veritabanı özeti: {info}\n"
-                    "Lütfen marka sağlığını analiz etmek için vizyoner tek bir iş sorusu üret. Sadece soruyu yaz."
-                )
-                macro_question = (hl_prompt | llm).invoke({"info": short_D_info}).content
-            else:
-                macro_question = manuel_soru
-                
-            st.write(f"**Odaklanılan Soru:** {macro_question}")
-            status.update(label="✅ 1. Aşama: Soru Belirlendi!", state="complete", expanded=False)
+    ---
+    **Sistem Yetenekleri:**
+    - 🎯 *Kök Sebep Analizi (Topics & Products)*
+    - 👥 *İlişkisel Demografi (SQL JOIN)*
+    - 📉 *Huni Daralması (Funnel Narrowing)*
+    - 🛡️ *Duygu Saplantısı Filtresi*
+    """
+)
 
-        with st.status("⚙️ 2. Aşama: Analiz rotası çiziliyor (SQL & RAG Yönlendirmesi)...", expanded=True) as status:
-            d_schema = db.get_table_info()
-            ll_prompt = PromptTemplate.from_template(
-                "Sen kıdemli bir veri analistisin. Veritabanının şeması:\n{schema}\n\n"
-                "Stratejik soru: {question}\n\n"
-                "GÖREVİN: Bu soruyu çözmek için ajana rehberlik edecek 2 net alt soru kurgula.\n"
-                "BİLGİ YÖNLENDİRMESİ:\n"
-                "1. Eğer soru sayılar, oranlar, demografi veya duygularla ilgiliyse bunu ŞEMADAKİ sütunlara göre SQL sorusuna çevir.\n"
-                "2. Eğer soru şirket politikaları, vizyon metinleri veya uzun dokümanlarla ilgiliyse bunu 'dokuman_arama_araci' ile çözülecek bir soruya çevir.\n"
-                "3. KRİTİK: Soruların başına mutlaka tire (-) işareti koyarak liste halinde yaz."
-            )
-            sub_questions_text = (ll_prompt | llm).invoke({"question": macro_question, "schema": d_schema}).content
-            st.markdown(sub_questions_text)
-            status.update(label="✅ 2. Aşama: Alt Sorular ve Rota Hazır!", state="complete", expanded=False)
 
-        with st.status("🔍 3. Aşama: GPT-4o Hibrit Ajanı çalışıyor (Veri ve Doküman Taraması)...", expanded=True) as status:
-            facts = []
-            # Sinyal kaybını önlemek için güvenli ayrıştırıcı (tire ile başlayanları alır)
-            for line in sub_questions_text.split('\n'):
-                if line.strip().startswith('-'):
-                    soru = line.lstrip("-* ").strip()
-                    if soru:
-                        st.write(f"👉 *Araştırılıyor:* {soru}")
-                        try:
-                            ans = agent_executor.invoke({"input": soru})["output"]
-                            facts.append(ans)
-                            st.success(f"**Bulunan Kanıt:** {ans}")
-                        except Exception as e:
-                            st.error(f"Veri çekilemedi: {e}")
+# --- 3. MAKRO TEMA VE GRAFİK MOTORU ---
+THEME_KEYWORDS = {
+    "Satın Alma Sonrası & Teslimat/İade": ["satın alma", "iade", "teslimat", "kargo", "gecikme", "sipariş"],
+    "Servis, Garanti & Onarım": ["servis", "garanti", "arıza", "tamir", "parça", "yedek", "onarım", "bakım"],
+    "Ürün Kalitesi & Dayanıklılık": ["kalite", "performans", "dayanıklılık", "bozul", "fırın", "süpürge", "ocak", "alet", "küçük ev"],
+    "Fiyat, Değer & Kampanya": ["fiyat", "kampanya", "indirim", "pahalı", "ücret", "değer"],
+    "Müşteri Hizmetleri & Çağrı": ["müşteri hizmet", "çağrı", "destek", "iletişim", "ulaşım", "telefon"],
+    "İnovasyon, Teknoloji & İmaj": ["inovasyon", "teknoloji", "liderlik", "güven", "tasarım", "robot"]
+}
+
+def map_micro_to_macro_theme(text: str) -> str:
+    t_low = str(text).lower()
+    for theme, kws in THEME_KEYWORDS.items():
+        if any(kw in t_low for kw in kws):
+            return theme
+    return "Diğer Müşteri Geri Bildirimleri"
+
+
+def render_generative_ui(result_data, query_json: dict, title_context: str = ""):
+    if not result_data:
+        st.info("Bu adım için görselleştirilecek veri dönmedi.")
+        return
+
+    df = None
+    try:
+        if isinstance(result_data, str) and result_data.startswith("[("):
+            import ast
+            raw_tuples = ast.literal_eval(result_data)
+            cols = []
+            if query_json.get("group_by"):
+                cols.extend(query_json["group_by"])
+            if query_json.get("aggregates"):
+                cols.extend([agg.get("as", "Adet") for agg in query_json["aggregates"]])
+            if not cols and raw_tuples:
+                cols = [f"Alan_{i+1}" for i in range(len(raw_tuples[0]))]
+            df = pd.DataFrame(raw_tuples, columns=cols[:len(raw_tuples[0])] if raw_tuples else None)
+        elif isinstance(result_data, list) and len(result_data) > 0 and isinstance(result_data[0], dict):
+            df = pd.DataFrame(result_data)
+        elif isinstance(result_data, pd.DataFrame):
+            df = result_data.copy()
+    except Exception:
+        df = None
+
+    if df is None or df.empty:
+        st.write("**Ham Veri:**", result_data)
+        return
+
+    df.columns = [str(c).replace('"', '').replace("'", "").split(".")[-1] for c in df.columns]
+
+    for c in df.columns:
+        converted = pd.to_numeric(df[c], errors='coerce')
+        if not converted.isna().all() and converted.notna().sum() > len(df) * 0.5:
+            df[c] = converted
+
+    numeric_cols = df.select_dtypes(include=['number']).columns.tolist()
+    categorical_cols = df.select_dtypes(exclude=['number']).columns.tolist()
+
+    if not numeric_cols and categorical_cols:
+        cat_c = categorical_cols[0]
+        freq = df[cat_c].value_counts().reset_index()
+        freq.columns = [cat_c, "Bahsedilme Sayısı"]
+        df = freq
+        numeric_cols = ["Bahsedilme Sayısı"]
+        categorical_cols = [cat_c]
+
+    val_col = numeric_cols[0] if numeric_cols else df.columns[-1]
+
+    # Senaryo 1: Demografi (Yaş & Cinsiyet)
+    has_age = any("age" in c.lower() for c in df.columns)
+    has_gen = any("gender" in c.lower() for c in df.columns)
+    if has_age and has_gen:
+        age_col = [c for c in df.columns if "age" in c.lower()][0]
+        gen_col = [c for c in df.columns if "gender" in c.lower()][0]
+        fig = px.bar(
+            df,
+            x=age_col,
+            y=val_col,
+            color=gen_col,
+            barmode="group",
+            title=f"{title_context} (Yaş ve Cinsiyet Dağılımı)",
+            text=val_col,
+            color_discrete_sequence=["#1f77b4", "#ff7f0e"]
+        )
+        fig.update_traces(textposition="outside")
+        fig.update_layout(height=380, margin=dict(l=20, r=20, t=40, b=40), yaxis_title="Bahsedilme Hacmi")
+        st.plotly_chart(fig, use_container_width=True)
+
+    # Senaryo 2: Kök Neden ve Konu Dağılımı
+    elif categorical_cols:
+        cat_col = categorical_cols[0]
+        if df[val_col].max() <= 3 and len(df) >= 3:
+            df_plot = df.copy()
+            df_plot["Makro Tema"] = df_plot[cat_col].apply(map_micro_to_macro_theme)
+            df_plot = df_plot.groupby("Makro Tema")[val_col].sum().reset_index()
+            df_plot = df_plot.sort_values(by=val_col, ascending=True)
+            plot_cat = "Makro Tema"
+            st.caption("ℹ️ *Tekil mikro başlıklar karar verilebilir netlik için makro iş temalarına konsolide edilmiştir.*")
+        else:
+            df[cat_col] = df[cat_col].astype(str).apply(lambda x: (x[:40] + "...") if len(x) > 40 else x)
+            df_plot = df.sort_values(by=val_col, ascending=True).tail(8)
+            plot_cat = cat_col
+
+        fig = px.bar(
+            df_plot,
+            x=val_col,
+            y=plot_cat,
+            orientation="h",
+            title=f"{title_context} (Hacim Dağılımı)",
+            text=val_col,
+            color_discrete_sequence=["#2b5c8f"]
+        )
+        fig.update_traces(textposition="outside")
+        fig.update_layout(
+            height=340,
+            xaxis_title="Bahsedilme Sayısı",
+            yaxis_title="",
+            margin=dict(l=10, r=30, t=40, b=30),
+            yaxis=dict(tickfont=dict(size=12))
+        )
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.dataframe(df, use_container_width=True)
+
+    with st.expander("📋 Detaylı Veri Tablosunu İncele", expanded=False):
+        st.dataframe(df, use_container_width=True, hide_index=True)
+
+
+# --- 4. ÇALIŞMA MODLARI ---
+mod = st.sidebar.radio(
+    "Çalışma Modunu Seçin:",
+    [
+        "🤖 Otonom İçgörü Modu",
+        "👤 Manuel Soru Modu",
+        "🧪 Hipotez Doğrulama Modu",
+        "🔮 Tahminleme (Predictive) Modu"
+    ]
+)
+
+# MOD 1: OTONOM İÇGÖRÜ MODU
+if mod == "🤖 Otonom İçgörü Modu":
+    st.subheader("🤖 Otonom Stratejik İçgörü Keşfi")
+    st.write("Ajan, veritabanındaki anomalileri ve operasyonel tıkanıklıkları otonom olarak araştırır.")
+
+    if st.button("🚀 Otonom Taramayı Başlat"):
+        with st.spinner("Veritabanı şeması taranıyor ve makro iş problemi belirleniyor..."):
+            schema = query_agent.schema
+            macro_q = rewrite_agent.generate_macro_question("Tablolar: twitter_tweets, demo_brand_users, demo_brand_predictions")
+            st.info(f"**Belirlenen Stratejik Araştırma Sorusu:** {macro_q}")
+            _, sub_qs = rewrite_agent.decompose_question(macro_q, schema)
             
-            if not facts: st.warning("⚠️ Ne veritabanından ne de dokümanlardan kanıt toplanamadı.")
-            status.update(label="✅ 3. Aşama: Kanıt Toplama Tamamlandı!", state="complete", expanded=False)
+        evidence_list = []
+        all_query_results = []
+        for i, sq in enumerate(sub_qs[:2], 1):
+            with st.status(f"Adım {i}: {sq}", expanded=False):
+                try:
+                    q_res = query_agent.execute_nl_query(sq)
+                    evidence_list.append(f"Soru: {sq}\nBulgu: {q_res['result']}\nSQL: {q_res['sql']}")
+                    all_query_results.append((sq, q_res))
+                    st.code(q_res['sql'], language="sql")
+                except Exception as e:
+                    evidence_list.append(f"Soru: {sq}\nHata: {e}")
 
-        if facts:
-            with st.spinner("📝 4. Aşama: Yönetici Raporu Hazırlanıyor..."):
-                facts_str = "\n".join(facts)
-                summary_prompt = PromptTemplate.from_template(
-                    "Aşağıdaki 'Doğrulanmış Veri Gerçeklerini' kullanarak, yöneticiler için 3 cümlelik, "
-                    "stratejik bir pazarlama içgörüsü yaz.\n\n"
-                    "KRİTİK BİRİM VE MATEMATİK KURALI:\n"
-                    "1. Gelen sayılar (Örn: 3390, 1879) kişi/hacim adetleridir. Oran değildir. Başına % işareti KOYMA.\n"
-                    "2. Gelen ondalık sayılar (Örn: 0.70) aslında %70 demektir. Yöneticiler için % formatına çevir.\n\n"
-                    "Veri Gerçekleri:\n{facts}"
-                )
-                final_insight = (summary_prompt | llm).invoke({"facts": facts_str}).content
-
-            st.divider()
-            st.subheader("🎯 Yönetici Özeti (Final Insight)")
-            st.info(final_insight, icon="💡")
-            st.balloons()
-
-            # --- YENİ EKLENEN GRAFİK ÇİZME (GENERATIVE UI) BÖLÜMÜ ---
-            with st.spinner("📊 5. Aşama: Dinamik Grafik Çiziliyor..."):
-                chart_prompt = PromptTemplate.from_template(
-                    "Sen bir veri görselleştirme uzmanısın. Aşağıdaki veri gerçeklerine bakarak bir grafik çizmek için JSON formatında veri üret.\n"
-                    "Eğer veriler oran veya dağılım içeriyorsa (örn: yaş grupları, cinsiyet) 'pie' (pasta) grafiği seç.\n"
-                    "Eğer veriler miktar veya hacim kıyaslamasıysa 'bar' (çubuk) grafiği seç.\n\n"
-                    "KURALLAR:\n"
-                    "1. Sadece geçerli bir JSON formatı döndür. Başında veya sonunda (```json) gibi markdown işaretleri OLMASIN.\n"
-                    "2. Asla açıklama metni yazma.\n\n"
-                    "Veriler:\n{facts}\n\n"
-                    "Beklenen Çıktı Formatı:\n"
-                    "{{\n"
-                    "  \"title\": \"Grafik Başlığı\",\n"
-                    "  \"type\": \"bar\", \n"
-                    "  \"labels\": [\"Kategori 1\", \"Kategori 2\"],\n"
-                    "  \"values\": [10, 20]\n"
-                    "}}"
-                )
-                chart_json_str = (chart_prompt | llm).invoke({"facts": facts_str}).content
-                
-            try:
-                # JSON metnindeki olası markdown kalıntılarını temizle
-                clean_json = chart_json_str.replace("```json", "").replace("```", "").strip()
-                chart_data = json.loads(clean_json)
-
-                # JSON verisini Pandas tablosuna çevir
-                df_chart = pd.DataFrame({
-                    "Kategori": chart_data["labels"],
-                    "Değer": chart_data["values"]
-                })
-
-                # Ajanın seçtiği grafik türüne (pie veya bar) göre çizim yap
-                if chart_data["type"] == "pie":
-                    fig = px.pie(df_chart, names="Kategori", values="Değer", title=chart_data["title"])
-                else:
-                    fig = px.bar(df_chart, x="Kategori", y="Değer", title=chart_data["title"])
-                
-                # Grafiği ekrana bas
-                st.plotly_chart(fig, use_container_width=True)
-                
-            except Exception as e:
-                st.info("Bu veri seti görselleştirme için yeterli sayısal kategori içermiyor.")
-
-    # -------------------------------------------------------------------------
-    # --- AKIŞ B: MOD 3 (GELİŞMİŞ HİPOTEZ DOĞRULAMA MOTORU) ---
-    # -------------------------------------------------------------------------
-    elif calisma_modu == "🧪 Hipotez Doğrulama Modu":
-        
-        with st.status("🧠 1. Aşama: Otomatik Hipotez Yapılandırılıyor...", expanded=True) as status:
-            d_schema = db.get_table_info()
-            hyp_prompt = PromptTemplate.from_template(
-                "Sen kıdemli bir veri bilimcisisin. Veritabanı şeması:\n{schema}\n\n"
-                "Araştırma Konusu: {question}\n\n"
-                "GÖREVİN: Bu konuyu test etmek için şemadaki sütunları baz alan tek bir Alternatif Hipotez (H1) üretmek "
-                "ve SQL ajanının test edeceği 2 somut alt soru kurgulamak.\n\n"
-                "ÇOK ÖNEMLİ KURALLAR:\n"
-                "1. Aradığın veriler farklı tablolardaysa 'Tabloları JOIN yaparak birleştirin' şeklinde açık talimat ekle.\n"
-                "2. Sorular kesinlikle matematiksel (COUNT, MAX, AVG) olsun. Ham tweet metni çekme (LIMIT hatası almamak için).\n"
-                "3. Hipotezini 'EN ÇOK' gibi kesinleyici kelimeler yerine, daha esnek istatistiksel kavramlar üzerine kur.\n\n"
-                "FORMAT KURALI:\n"
-                "Hipotez (H1): [Hipotez cümlesi]\n"
-                "- [1. net SQL sorusu]\n"
-                "- [2. net SQL sorusu]"
-            )
-            hyp_text = (hyp_prompt | llm).invoke({"question": manuel_soru, "schema": d_schema}).content
-            st.markdown(hyp_text)
+        with st.spinner("Yönetici özeti hazırlanıyor..."):
+            combined_evidence = "\n\n".join(evidence_list)
+            insight = synthesis_engine.synthesize_executive_summary(macro_q, combined_evidence)
             
-            # Sinyal kaybını önlemek için güvenli ayrıştırıcı (tire ile başlayanları alır)
-            sub_questions = [line.lstrip("-* ").strip() for line in hyp_text.split('\n') if line.strip().startswith('-')]
-            status.update(label="✅ 1. Aşama: Hipotez Kurgulandı!", state="complete", expanded=False)
+            st.markdown("### 📌 Yönetici Özeti (Final Insight)")
+            st.success(insight)
 
-        with st.status("🔍 2. Aşama: Hipotez GPT-4o ile test ediliyor...", expanded=True) as status:
-            facts = []
-            for soru in sub_questions:
-                if soru:
-                    st.write(f"👉 *Test Ediliyor:* {soru}")
+            if all_query_results:
+                tab_titles = [f"📊 Görsel Analiz (Adım {idx+1})" for idx in range(len(all_query_results))]
+                tabs = st.tabs(tab_titles)
+                for idx, tab in enumerate(tabs):
+                    with tab:
+                        sq_text, res_obj = all_query_results[idx]
+                        st.caption(f"**Soru:** {sq_text}")
+                        render_generative_ui(res_obj["result"], res_obj["json_query"], f"Adım {idx+1}")
+
+# ==============================================================================
+# MOD 2: ÇOK TURLU SOHBET VE KONU TAKİBİ MODU (ROADMAP 3A - CHAT THREADING)
+# ==============================================================================
+elif mod == "👤 Manuel Soru Modu":
+    st.subheader("👤 Yönetici Soru ve Takip Modu (Chat Threading)")
+    st.caption("Önceki sorularınızı ve filtrelerinizi unutmayan çok turlu konuşma motoru.")
+
+    # Oturum durumlarını (Session State) başlat
+    if "chat_history" not in st.session_state:
+        st.session_state.chat_history = []
+    if "pending_clarification" not in st.session_state:
+        st.session_state.pending_clarification = None
+    if "active_final_query" not in st.session_state:
+        st.session_state.active_final_query = None
+
+    # Sol tarafa sohbeti temizleme butonu ekle
+    with st.sidebar:
+        if st.button("🗑️ Konuyu Sıfırla (Yeni Oturum)"):
+            st.session_state.chat_history = []
+            st.session_state.pending_clarification = None
+            st.session_state.active_final_query = None
+            st.rerun()
+
+    # 1. Önceki konuşma geçmişini ekrana bas
+    for idx, turn in enumerate(st.session_state.chat_history):
+        with st.chat_message("user"):
+            st.markdown(f"**{turn['user_query']}**")
+            if turn.get("resolved_query") and turn["resolved_query"] != turn["user_query"]:
+                st.caption(f"*(Bağlamdan türetilen analiz sorusu: {turn['resolved_query']})*")
+
+        with st.chat_message("assistant"):
+            st.markdown(turn["insight"])
+            if turn.get("all_query_results"):
+                tab_titles = [f"📊 Grafik {t_idx+1}" for t_idx in range(len(turn["all_query_results"]))]
+                tabs = st.tabs(tab_titles)
+                for t_idx, tab in enumerate(tabs):
+                    with tab:
+                        sq_text, res_obj = turn["all_query_results"][t_idx]
+                        st.caption(f"**Soru:** {sq_text}")
+                        render_generative_ui(res_obj["result"], res_obj["json_query"], f"T{idx+1}-Adım{t_idx+1}")
+
+    # 2. Netleştirme bekleyen butonlar varsa göster
+    if st.session_state.pending_clarification:
+        clar_data = st.session_state.pending_clarification
+        st.warning(f"🤔 **Hedef Belirleme:** {clar_data['message']}")
+        opt_cols = st.columns(len(clar_data["options"]))
+        for idx, opt in enumerate(clar_data["options"]):
+            with opt_cols[idx]:
+                if st.button(opt["label"], key=f"clar_btn_chat_{idx}"):
+                    st.session_state.active_final_query = f"{clar_data['base_query']} ({opt['context']})"
+                    st.session_state.pending_clarification = None
+                    st.rerun()
+
+    # 3. Yeni soru girişi (Chat Input)
+    user_input = st.chat_input("Pazarlama stratejisi veya takip sorunuzu yazın (Örn: Peki bunun kadınlar arasındaki oranı ne?)...")
+
+    if user_input:
+        schema = query_agent.schema
+
+        # Konuşma hafızasından takip sorusunu çözümle
+        with st.spinner("Önceki bağlam taranıyor ve soru netleştiriliyor..."):
+            resolved_query = rewrite_agent.contextualize_query(
+                user_input, 
+                [{"user": t["user_query"], "assistant_summary": t["insight"]} for t in st.session_state.chat_history]
+            )
+
+        # Netleştirme gerekiyor mu denetle
+        clarification_eval = rewrite_agent.assess_clarification_need(resolved_query, schema)
+
+        if clarification_eval.get("needs_clarification", False) and clarification_eval.get("options"):
+            st.session_state.pending_clarification = {
+                "base_query": resolved_query,
+                "message": clarification_eval.get("clarification_message", "Hangi alana odaklanalım?"),
+                "options": clarification_eval.get("options", [])
+            }
+            st.rerun()
+        else:
+            st.session_state.pending_clarification = None
+            st.session_state.active_final_query = resolved_query
+            st.session_state.last_user_raw_input = user_input
+
+    # 4. Soruyu Çalıştır ve Yanıtı Kaydet
+    if st.session_state.active_final_query:
+        query_to_run = st.session_state.active_final_query
+        raw_input = getattr(st.session_state, "last_user_raw_input", query_to_run)
+        st.session_state.active_final_query = None
+
+        with st.chat_message("user"):
+            st.markdown(f"**{raw_input}**")
+            if query_to_run != raw_input:
+                st.caption(f"*(Bağlamdan türetilen analiz: {query_to_run})*")
+
+        with st.chat_message("assistant"):
+            with st.spinner("Soru alt analiz adımlarına ayrıştırılıyor..."):
+                schema = query_agent.schema
+                _, sub_qs = rewrite_agent.decompose_question(query_to_run, schema)
+
+            evidence_list = []
+            all_query_results = []
+            for i, sq in enumerate(sub_qs[:2], 1):
+                with st.status(f"Analiz Adımı {i}: {sq}", expanded=False):
                     try:
-                        ans = agent_executor.invoke({"input": soru})["output"]
-                        facts.append(ans)
-                        st.success(f"**Bulunan Kanıt:** {ans}")
+                        q_res = query_agent.execute_nl_query(sq)
+                        evidence_list.append(f"Bulgu: {q_res['result']}")
+                        all_query_results.append((sq, q_res))
+                        st.code(q_res['sql'], language="sql")
                     except Exception as e:
-                        st.error(f"Veri çekilemedi: {e}")
-                        
-            status.update(label="✅ 2. Aşama: Kanıtlar Toplandı!", state="complete", expanded=False)
+                        evidence_list.append(f"Hata: {e}")
 
-        if facts:
-            with st.spinner("⚖️ 3. Aşama: Bilimsel Doğrulama Kararı Veriliyor..."):
-                facts_str = "\n".join(facts)
-                val_prompt = PromptTemplate.from_template(
-                    "Aşağıda ortaya atılan hipotez ve SQL ajanının getirdiği gerçekler yer alıyor.\n\n"
-                    "Hipotez:\n{hypothesis}\n\n"
-                    "Toplanan Veri Gerçekleri:\n{facts}\n\n"
-                    "GÖREVİN: Verileri inceleyerek hipoteze karar vermek. Seçeneklerin:\n"
-                    "1. 'Doğrulandı'\n2. 'Çürütüldü'\n3. 'Kısmen Doğrulandı (Partially Validated)'\n\n"
-                    "Yöneticiler için maksimum 3 cümlelik rapor yaz. İlk cümlen hipotezin akıbetini açıkça belirtsin."
-                )
-                validation_report = (val_prompt | llm).invoke({"hypothesis": hyp_text, "facts": facts_str}).content
+            with st.spinner("Yönetici özeti sentezleniyor..."):
+                combined_evidence = "\n\n".join(evidence_list)
+                insight = synthesis_engine.synthesize_executive_summary(query_to_run, combined_evidence)
 
-            st.divider()
-            st.subheader("🎯 Hipotez Doğrulama Sonucu")
-            st.info(validation_report, icon="⚖️")
-            st.balloons()
+                st.markdown(insight)
+
+                if all_query_results:
+                    tab_titles = [f"📊 Analiz {idx+1}" for idx in range(len(all_query_results))]
+                    tabs = st.tabs(tab_titles)
+                    for idx, tab in enumerate(tabs):
+                        with tab:
+                            sq_text, res_obj = all_query_results[idx]
+                            st.caption(f"**Araştırılan Soru:** {sq_text}")
+                            render_generative_ui(res_obj["result"], res_obj["json_query"], f"Bulgu {idx+1}")
+
+            # Konuşma hafızasına kaydet
+            st.session_state.chat_history.append({
+                "user_query": raw_input,
+                "resolved_query": query_to_run,
+                "insight": insight,
+                "all_query_results": all_query_results
+            })
+            st.rerun()
 
 
-    # -------------------------------------------------------------------------
-    # --- AKIŞ C: MOD 4 (TAHMİNLEME VE PROJEKSİYON MOTORU - PREDICTIVE AI) ---
-    # -------------------------------------------------------------------------
-    elif calisma_modu == "🔮 Tahminleme (Predictive) Modu":
-        
-        with st.status("🧠 1. Aşama: Zaman Serisi ve Trend Analizi Kurgulanıyor...", expanded=True) as status:
-            d_schema = db.get_table_info()
-            pred_prompt = PromptTemplate.from_template(
-                "Sen bir tahminleme (predictive) veri bilimcisisin. Veritabanı şeması:\n{schema}\n\n"
-                "Kullanıcının Tahmin Talebi: {question}\n\n"
-                "GÖREVİN: Geleceği tahmin edebilmemiz için bize GEÇMİŞ TRENDLERİ verecek 2 net SQL alt sorusu kurgulamak.\n"
-                "KURALLAR:\n"
-                "1. Zaman (date, timestamp, month vb.) sütunları varsa mutlaka onlara göre grupla (GROUP BY).\n"
-                "2. Eğer zaman sütunu yoksa, veriyi büyüklük veya kategori bazında sıralayarak (ORDER BY) bir trend yakalamaya çalış.\n"
-                "3. Soruların başına tire (-) koyarak liste halinde ver."
-            )
-            pred_text = (pred_prompt | llm).invoke({"question": manuel_soru, "schema": d_schema}).content
-            st.markdown(pred_text)
-            
-            sub_questions = [line.lstrip("-* ").strip() for line in pred_text.split('\n') if line.strip().startswith('-')]
-            status.update(label="✅ 1. Aşama: Trend Sorguları Hazır!", state="complete", expanded=False)
+# ==============================================================================
+# MOD 3: ÇOKLU VE RAKİP HİPOTEZ DOĞRULAMA MODU (ROADMAP 3E)
+# ==============================================================================
+elif mod == "🧪 Hipotez Doğrulama Modu":
+    st.subheader("🧪 Çoklu ve Rakip Hipotez Doğrulama Motoru")
+    st.write("Tekil doğrulama yanlılığını engelleyin: Fikrinizi Sıfır Hipotezi ($H_0$) ve Rakip Hipotezlerle ($H_2$) çapraz sınayın.")
 
-        with st.status("🔍 2. Aşama: Geçmiş Veriler Toplanıyor...", expanded=True) as status:
-            facts = []
-            for soru in sub_questions:
-                if soru:
-                    st.write(f"👉 *Sorgulanıyor:* {soru}")
-                    try:
-                        ans = agent_executor.invoke({"input": soru})["output"]
-                        facts.append(ans)
-                        st.success(f"**Bulunan Geçmiş Veri:** {ans}")
-                    except Exception as e:
-                        st.error(f"Veri çekilemedi: {e}")
-                        
-            status.update(label="✅ 2. Aşama: Veriler Toplandı!", state="complete", expanded=False)
+    hyp_input = st.text_input(
+        "Sınamak istediğiniz iş hipotezini veya gözlemi girin:",
+        value="The sharp decline in Consideration in 2026 means the top of the funnel is narrowing."
+    )
 
-        if facts:
-            with st.spinner("🔮 3. Aşama: LLM Tabanlı Tahminleme (Predictive) Motoru Çalışıyor..."):
-                facts_str = "\n".join(facts)
-                forecast_prompt = PromptTemplate.from_template(
-                    "Sen gelişmiş bir Tahminleme (Predictive) modelisin.\n"
-                    "Aşağıdaki geçmiş verilere bakarak matematiksel ve mantıksal bir gelecek projeksiyonu yap.\n\n"
-                    "Geçmiş Veriler:\n{facts}\n\n"
-                    "GÖREVİN:\n"
-                    "1. Gidişatı analiz et.\n"
-                    "2. Yakın gelecek (örn: önümüzdeki ay/çeyrek) için tahmini bir metrik veya oransal değişim (örn: %15 artış beklentisi) ver.\n"
-                    "3. Bu tahmini kırmak (iyileştirmek) için yöneticilere 1 adet acil eylem planı sun.\n\n"
-                    "Format: 3 maddelik kısa ve son derece profesyonel bir rapor."
-                )
-                forecast_report = (forecast_prompt | llm).invoke({"facts": facts_str}).content
+    if st.button("⚖️ Hipotezleri Yarıştır ve Test Et") and hyp_input:
+        with st.spinner("Yarışan hipotezler ($H_0, H_1, H_2$) türetiliyor ve ayırt edici sorgular planlanıyor..."):
+            schema = query_agent.schema
+            hyp_dict, test_qs = rewrite_agent.formulate_competing_hypotheses(hyp_input, schema)
 
-            st.divider()
-            st.subheader("🔮 Gelecek Projeksiyonu (Predictive Forecast)")
-            st.info(forecast_report, icon="📈")           
+        # Hipotezleri Ekranda 3 Kart Olarak Göster
+        col_h0, col_h1, col_h2 = st.columns(3)
+        with col_h0:
+            st.info(f"**Sıfır Hipotezi ($H_0$):**\n\n{hyp_dict.get('H0', 'Tanımlanmadı')}")
+        with col_h1:
+            st.success(f"**Birincil Hipotez ($H_1$):**\n\n{hyp_dict.get('H1', 'Tanımlanmadı')}")
+        with col_h2:
+            st.warning(f"**Rakip Hipotez ($H_2$):**\n\n{hyp_dict.get('H2', 'Tanımlanmadı')}")
+
+        st.divider()
+
+        # Ayırt Edici SQL Sorgularını Çalıştır
+        evidence_list = []
+        all_query_results = []
+        for i, tq in enumerate(test_qs[:2], 1):
+            with st.status(f"Ayırt Edici Test Aşaması {i}: {tq}", expanded=False):
+                try:
+                    q_res = query_agent.execute_nl_query(tq)
+                    evidence_list.append(f"Test Sorusu: {tq}\nBulgu: {q_res['result']}")
+                    all_query_results.append((tq, q_res))
+                    st.code(q_res['sql'], language="sql")
+                except Exception as e:
+                    evidence_list.append(f"Hata: {e}")
+
+        # Sentez ve Karşılaştırmalı Karne
+        with st.spinner("Pazarlama alan bilgisi işletiliyor ve Karşılaştırmalı Hipotez Karnesi oluşturuluyor..."):
+            combined_evidence = "\n\n".join(evidence_list)
+            scorecard_report = synthesis_engine.evaluate_competing_hypotheses(hyp_dict, combined_evidence)
+
+            st.markdown("### 🏆 Hipotez Karşılaştırma Raporu ve Karne")
+            st.markdown(scorecard_report)
+
+            if all_query_results:
+                tab_titles = [f"📊 Kanıt Verisi (Test {idx+1})" for idx in range(len(all_query_results))]
+                tabs = st.tabs(tab_titles)
+                for idx, tab in enumerate(tabs):
+                    with tab:
+                        tq_text, res_obj = all_query_results[idx]
+                        st.caption(f"**Ayırt Edici Soru:** {tq_text}")
+                        render_generative_ui(res_obj["result"], res_obj["json_query"], f"Kanıt {idx+1}")
+
+
+
+
+# MOD 4: TAHMİNLEME (PREDICTIVE) MODU
+elif mod == "🔮 Tahminleme (Predictive) Modu":
+    st.subheader("🔮 Gelecek Dönem Projeksiyonu ve Trend Tahmini")
+    st.write("Zaman serilerini inceleyerek olası riskleri ve büyüme eğilimlerini öngörün.")
+
+    pred_input = st.text_input(
+        "Geleceğini tahmin etmek istediğiniz metrik veya konuyu girin:",
+        placeholder="Örn: Önümüzdeki dönemde kargo ve teslimat kaynaklı şikayetler nasıl seyredecek?"
+    )
+
+    if st.button("Trend Analizi ve Projeksiyon Üret") and pred_input:
+        with st.spinner("Zaman serisi sorguları planlanıyor..."):
+            schema = query_agent.schema
+            _, trend_qs = rewrite_agent.decompose_predictive_trends(pred_input, schema)
+
+        evidence_list = []
+        all_query_results = []
+        for i, tq in enumerate(trend_qs[:2], 1):
+            with st.status(f"Trend Adımı {i}: {tq}", expanded=False):
+                try:
+                    q_res = query_agent.execute_nl_query(tq)
+                    evidence_list.append(f"Zaman Serisi Bulgusu: {q_res['result']}")
+                    all_query_results.append((tq, q_res))
+                    st.code(q_res['sql'], language="sql")
+                except Exception as e:
+                    evidence_list.append(f"Hata: {e}")
+
+        with st.spinner("Tahminleme ve erken uyarı raporu oluşturuluyor..."):
+            combined_evidence = "\n\n".join(evidence_list)
+            pred_insight = synthesis_engine.synthesize_predictive_insight(pred_input, combined_evidence)
+
+            st.markdown("### 📈 Gelecek Trend Projeksiyonu ve Risk Analizi")
+            st.warning(pred_insight)
+
+            if all_query_results:
+                tab_titles = [f"📊 Trend Dağılımı (Adım {idx+1})" for idx in range(len(all_query_results))]
+                tabs = st.tabs(tab_titles)
+                for idx, tab in enumerate(tabs):
+                    with tab:
+                        tq_text, res_obj = all_query_results[idx]
+                        st.caption(f"**Trend Sorusu:** {tq_text}")
+                        render_generative_ui(res_obj["result"], res_obj["json_query"], f"Trend {idx+1}")
