@@ -12,6 +12,8 @@ import streamlit as st
 
 from agents.query_agent import QueryAgent
 from agents.rewrite_nl_agent import RewriteNLAgent
+from agents.data_schema import DATA_CONTEXT
+from agents.credentials import configure_openai_credentials
 
 try:
     from agents.domain_rules import (
@@ -22,7 +24,7 @@ try:
     )
 except ImportError:
     def get_domain_context_prompt() -> str:
-        return "Pazarlama hunisinde Consideration düşüşü funnel daralmasını gösterir. Kök neden için topics/products sütunlarına odaklan."
+        return DATA_CONTEXT
     def build_hypothesis_synthesis_prompt(h: str, e: str) -> str:
         return f"Hipotez: {h}\nKanıtlar: {e}\nLütfen hipotezi doğrula ve açıkla."
 
@@ -40,8 +42,9 @@ except Exception:
 SQL_AGENT_PREFIX = f"""
 Sen üst düzey bir Pazarlama Veri Analisti ve SQL Danışmanısın.
 Görevlerin:
-1. KÖK SEBEP ÖNCELİĞİ: 'Neden', 'ürün problemi', 'şikayet kaynağı' gibi sorularda 'emotions' sütununu tek başına KULLANMA. 'topics', 'topic_categories' ve 'products' sütunlarındaki gerçek operasyonel sebepleri bul.
-2. DEMOGRAFİK BİRLEŞTİRME (JOIN): Yaş veya cinsiyet sorulduğunda 'twitter_tweets' ile 'demo_brand_users' tablolarını 'author_id = id' üzerinden birleştir (JOIN). Botları hariç tutmak için 'is_org = 0' filtresi uygula.
+1. VERİ SÖZLÜĞÜ:
+{DATA_CONTEXT}
+2. KÖK SEBEP: Konu ve demografi dağılımlarını betimle; veriyle kanıtlanmayan ürün veya nedensellik iddiaları üretme.
 3. KAVRAMSAL KURALLAR:
 {get_domain_context_prompt()}
 """
@@ -60,7 +63,7 @@ class SynthesisEngine:
             "Veritabanından Toplanan Kanıtlar:\n{evidence}\n\n"
             "{domain_rules}\n\n"
             "GÖREVİN:\n"
-            "1. Yalnızca duygulardan bahsetme; arka plandaki kök nedenleri (topics, products) ve demografik eğilimleri vurgula.\n"
+            "1. Mevcut topic_name konu dağılımını ve demografik eğilimleri betimle; ürün bilgisi veya kanıtlanmamış kök neden uydurma.\n"
             "2. En fazla 3-4 cümlelik vurucu, profesyonel bir Yönetici Özeti (Final Insight) oluştur.\n"
             "3. En sona yönetici için 1 adet somut stratejik aksiyon adımı ekle."
         )
@@ -129,6 +132,7 @@ def get_hybrid_agent(
     fast_model: str = "gpt-4o-mini",
     reasoning_model: str = "gpt-4o"
 ):
+    configure_openai_credentials()
     db = SQLDatabase.from_uri(db_uri)
     
     # 1. Kademe: SQL ve sorgu planlayıcı model

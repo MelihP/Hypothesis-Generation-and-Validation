@@ -94,7 +94,7 @@ st.sidebar.markdown(
     
     ---
     **Sistem Yetenekleri:**
-    - 🎯 *Kök Sebep Analizi (Topics & Products)*
+    - 🎯 *Konu Dağılımı Analizi*
     - 👥 *İlişkisel Demografi (SQL JOIN)*
     - 📉 *Huni Daralması (Funnel Narrowing)*
     - 🛡️ *Duygu Saplantısı Filtresi*
@@ -248,7 +248,7 @@ if mod == "🤖 Otonom İçgörü Modu":
     if st.button("🚀 Otonom Taramayı Başlat"):
         with st.spinner("Veritabanı şeması taranıyor ve makro iş problemi belirleniyor..."):
             schema = query_agent.schema
-            macro_q = rewrite_agent.generate_macro_question("Tablolar: twitter_tweets, demo_brand_users, demo_brand_predictions")
+            macro_q = rewrite_agent.generate_macro_question(schema)
             st.info(f"**Belirlenen Stratejik Araştırma Sorusu:** {macro_q}")
             _, sub_qs = rewrite_agent.decompose_question(macro_q, schema)
             

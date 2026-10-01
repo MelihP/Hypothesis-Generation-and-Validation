@@ -11,6 +11,10 @@ from typing import Any, Optional
 from langchain_community.utilities.sql_database import SQLDatabase
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.messages import SystemMessage
+from agents.data_schema import DATA_CONTEXT, validate_query_schema
+from sqlalchemy import inspect
+from agents.credentials import configure_openai_credentials
 import streamlit as st
 
 logger = logging.getLogger(__name__)
@@ -75,26 +79,9 @@ BEKLENEN JSON ÇIKTI FORMATI:
   "limit": <sayi>
 }
 
-KRİTİK İŞ VE DERLEME KURALLARI:
-1. KÖK SEBEP VE MAKRO KATEGORİ KURALI (NOISE FILTER):
-   - Kök neden/sorun analizlerinde ASLA tekil mikro cümleleri ('topic_name' veya 'topics') tek başına gruplama. Çünkü binlerce farklı başlık olduğundan her birine 1-2 adet düşer.
-   - Bunun yerine üst kategorileri temsil eden 'topic_categories' veya 'products' sütunlarını grupla ('group_by').
-   - Sıralamayı her zaman hesaplanan hacme göre azalan yap (order_by DESC) ve limit belirle (Örn: limit: 5 veya 10).
-
-2. DEMOGRAFİK SORGULAR VE ZORUNLU JOIN KURALI:
-   - Soru yaş grubu ('age_range') veya cinsiyet ('gender') kırılımı içeriyorsa:
-     * 'table': 'twitter_tweets'
-     * 'joins': [{"type": "INNER", "table": "demo_brand_users", "on": {"left": "twitter_tweets.author_id", "right": "demo_brand_users.id"}}]
-     * Bot hesapları hariç tutmak için filters alanına zorunlu olarak şunu ekle:
-       {"column": "demo_brand_users.is_org", "op": "EQ", "value": 0}
-     * 'group_by' içine 'demo_brand_users.age_range' veya 'demo_brand_users.gender' ekle.
-
-3. CONSUMER JOURNEY VE JSON DİZİLERİ:
-   - 'consumer_journey' aşamaları (Recommendation, Complaint, Purchase, Consideration) metin içinde dizi olarak tutulur.
-   - Bu aşamaları filtrelerken 'LIKE' operatörünü kullan (Örn: {"column": "twitter_tweets.consumer_journey", "op": "LIKE", "value": "Recommendation"}).
-
-4. ÇIKTI KURALI:
-   - Yalnızca saf JSON formatında yanıt döndür. Markdown kod blokları veya açıklama metni KOYMA.
+Yalnızca saf JSON formatında yanıt döndür. Markdown kod blokları veya açıklama metni KOYMA.
+Sorguya uygun bir limit belirle (örneğin 10).
+İstenen alan şemada yoksa sorgu uydurmak yerine {"unsupported": "Türkçe gerekçe"} döndür.
 """
 
 
@@ -340,6 +327,7 @@ class QueryAgent:
     @property
     def llm(self) -> ChatOpenAI:
         if self._llm is None:
+            configure_openai_credentials()
             key = self.api_key or os.environ.get("OPENAI_API_KEY")
             if not key:
                 try:
@@ -356,7 +344,8 @@ class QueryAgent:
     def generate_query_json(self, question: str) -> dict[str, Any]:
         """Kullanıcı sorusunu ilişkisel JSON sorgusuna çevirir."""
         prompt = ChatPromptTemplate.from_messages([
-            ("system", _QUERY_GENERATOR_SYSTEM_PROMPT),
+            # A concrete message preserves literal JSON braces and schema content.
+            SystemMessage(content=_QUERY_GENERATOR_SYSTEM_PROMPT.replace("{schema}", self.schema) + DATA_CONTEXT),
             ("user", "Bu soruyu yapılandırılmış JSON formatına çevir: {question}")
         ])
         chain = prompt | self.llm
@@ -370,6 +359,10 @@ class QueryAgent:
 
         try:
             query_json = json.loads(raw_text)
+            if not isinstance(query_json, dict):
+                raise ValueError("Sorgu planı bir JSON nesnesi olmalıdır.")
+            if "unsupported" in query_json:
+                raise ValueError(f"Desteklenmeyen analiz: {query_json['unsupported']}")
             return query_json
         except json.JSONDecodeError as e:
             logger.error(f"LLM çıktısı JSON olarak ayrıştırılamadı: {raw_text}")
@@ -378,6 +371,11 @@ class QueryAgent:
     def execute_nl_query(self, question: str) -> dict[str, Any]:
         """Doğal dil sorusunu JSON ve SQL derleme adımlarından geçirip veritabanında çalıştırır."""
         query_json = self.generate_query_json(question)
+        if isinstance(self.db, SQLDatabase):
+            inspector = inspect(self.db._engine)
+            tables = {name: {col["name"] for col in inspector.get_columns(name)}
+                      for name in self.db.get_usable_table_names()}
+            validate_query_schema(query_json, tables)
         sql = compile_json_to_sql(query_json)
         result = self.db.run(sql)
         return {
