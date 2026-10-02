@@ -53,7 +53,7 @@ MACRO_QUESTION_PROMPT = """\
 Sen uzman bir pazarlama direktörüsün. Veritabanı özeti:
 {info}
 
-Tüketici yolculuğundaki tıkanıklıkları sorgulayan tek bir stratejik soru üret. Sadece soruyu yaz.\
+Yalnızca bu veritabanından hesaplanabilen tek bir betimsel soru üret. Yolculuk etiketleri varsa aşama başına farklı tweet/kişi sayısını sor; yoksa mevcut bir kategorinin dağılımını sor. Bir soru içinde demografi, konum ve duygu analizlerini birleştirme. Şemada ölçülmeyen tıkanıklık, satış, dönüşüm veya neden-sonuç iddiası isteme. Belge veya dış bilgi isteme. Sadece soruyu yaz.\
 """
 
 
@@ -66,7 +66,7 @@ Soru: {question}
 
 GÖREVİN: Bu soruyu çözecek en az sayıda (1–4) alt soru üret. Tek sorgu yeterliyse bir soru üret.
 SQLite şemasında bu tablo ve sütunlar varsa bilinen ilişki: consumer_journey.author_id = demographics.user_id; emotion_analysis.author_id = demographics.user_id. ClickHouse için yalnızca canlı şemadaki alanları kullan.
-Kullanıcının istemediği analizleri ekleme; yalnızca şemadaki gerçek sütunları ve ilişkileri kullan.
+Kullanıcının istemediği analizleri ekleme; yalnızca şemadaki gerçek sütunları ve ilişkileri kullan. Her alt soru kısa, doğrudan hesaplanabilir bir metrik ve en fazla iki gruplama sütunu içersin. Şemada ölçülmeyen tıkanıklık/dönüşüm oranını veya nedenselliği sorgulama; etiket dağılımını gerçek dönüşüm olarak sunma. Konumu yaş, cinsiyet ve aşamayla aynı sorguda çaprazlama.
 Soruların başına tire (-) koy.\
 """
 

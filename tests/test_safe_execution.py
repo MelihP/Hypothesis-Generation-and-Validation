@@ -70,3 +70,18 @@ class TestSafeExecution(unittest.TestCase):
         plan = {"table": "items", "alias": "a", "columns": ["a.id"], "joins": [{"table": "items", "alias": "b",
                 "on": [{"left": "a.id", "right": "b.id"}, {"left": "a.name", "right": "b.name"}]}]}
         self.assertEqual(len(self.query.execute_plan(plan)["rows"]), 3)
+
+    def test_model_singleton_sort_and_optional_null_are_normalized(self):
+        import json
+        from langchain_core.messages import AIMessage
+        from langchain_core.runnables import RunnableLambda
+        plan = {"table":"items", "columns":["id"], "filters":None,
+                "order_by":{"column":"id","dir":"desc"},"limit":3}
+        self.query._llm = RunnableLambda(lambda _: AIMessage(content=json.dumps(plan)))
+        result = self.query.execute_nl_query("IDs descending")
+        self.assertEqual(result["rows"], [[3],[2],[1]])
+        self.assertNotIn("filters",result["json_query"])
+        self.assertEqual(result["json_query"]["order_by"],[{"column":"id","dir":"desc"}])
+        plan["order_by"] = "id DESC; DELETE FROM items"
+        with self.assertRaises(ValueError):
+            self.query.execute_nl_query("IDs descending")

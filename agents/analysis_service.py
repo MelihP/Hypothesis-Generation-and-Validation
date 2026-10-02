@@ -65,7 +65,7 @@ class AnalysisService:
         try:
             resolved = self.rewrite.contextualize_query(question, history or []) if history else question
             answer["resolved_query"] = resolved
-            route = self.rewrite.route_question(resolved) if source == "auto" else source
+            route = "sql" if source == "auto" and mode == "autonomous" else self.rewrite.route_question(resolved) if source == "auto" else source
             if route not in {"sql", "documents", "hybrid"}:
                 raise ValueError("Analiz kaynağı geçersiz.")
             if mode == "predictive":

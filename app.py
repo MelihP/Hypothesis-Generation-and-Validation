@@ -167,12 +167,15 @@ except Exception as exc:
     st.stop()
 active_backend = query_engine().backend
 st.caption("Aktif veri kaynağı: " + ("ClickHouse" if active_backend.dialect == "clickhouse" else "SQLite"))
+if active_backend.dialect == "sqlite" and not active_backend.fallback:
+    st.info("ClickHouse yapılandırması bulunmadığı için yerel SQLite verisi kullanılıyor. Canlı veri için bu Streamlit uygulamasının Secrets bölümüne CLICKHOUSE_HOST ve bağlantı ayarlarını ekleyin.")
 if getattr(active_backend, "tls_verification_disabled", False):
     st.warning("ClickHouse TLS sertifika doğrulaması mevcut yapılandırmada kapalı. Geçerli CA sertifikasıyla CLICKHOUSE_VERIFY=true kullanılması önerilir.")
 if active_backend.fallback:
     st.warning("ClickHouse bağlantısı başarısız. ALLOW_SQLITE_FALLBACK açık olduğu için SQLite yedek verisi gösteriliyor; üretim verisi değildir.")
 periods = sorted({p for item in catalog.values() for p in item["periods"]})
-st.caption("Yerel veri dönemleri: " + ", ".join(str(p) for p in periods)) if periods else None
+if periods:
+    st.caption("Yerel veri dönemleri: " + ", ".join(str(p) for p in periods))
 if active_backend.dialect == "sqlite" and len(periods)<2:
     st.info("Mevcut veride çok dönemli trend analizi yapılamıyor. Eksik dönem, sıfır gözlem anlamına gelmez.")
 with st.sidebar.expander("Veri kataloğu"):

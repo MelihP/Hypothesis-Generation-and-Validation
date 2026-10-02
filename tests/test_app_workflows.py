@@ -26,6 +26,7 @@ class TestAppWorkflows(unittest.TestCase):
             widget(app.radio, "Çalışma modu").set_value(mode)
             app.run(timeout=20)
             self.assertEqual(len(app.exception), 0)
+            self.assertEqual(len(app.get("doc_string")), 0)
 
     def test_builder_produces_real_table_and_downloads(self):
         app = self.explorer(self.app())

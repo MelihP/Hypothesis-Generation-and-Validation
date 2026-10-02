@@ -87,3 +87,12 @@ class TestAnalysisService(unittest.TestCase):
         self.assertEqual(answer["status"], "failed")
         self.synthesis.synthesize_predictive_insight.assert_not_called()
         self.rewrite.decompose_predictive_trends.assert_not_called()
+
+    def test_autonomous_auto_uses_schema_database_without_document_routing(self):
+        self.rewrite.route_question.return_value = "hybrid"
+        self.query.execute_nl_query.return_value = success()
+        self.service.documents = MagicMock()
+        answer = self.service.analyze("Stage counts",mode="autonomous",source="auto")
+        self.assertEqual(answer["status"],"success")
+        self.rewrite.route_question.assert_not_called()
+        self.service.documents.search.assert_not_called()

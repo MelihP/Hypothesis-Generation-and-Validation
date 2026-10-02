@@ -18,6 +18,8 @@ Demografi, ürün, görev adı veya tarih alanını uydurma. tweet_predictions, 
 SQLite yedek veri için consumer_journey.author_id = demographics.user_id veya emotion_analysis.author_id ilişkisini kullanabilirsin.
 Yıl/ay fonksiyonu veya hesap ifadesi columns/group_by içinde desteklenmez; bu alanlara SQL ifadesi yazma.
 Birden fazla etiket/kayıt bulunan veride tweet/kişi sayısı için count_distinct kullan; kayıt sayısı farklı metriktir.
+order_by, joins, filters ve aggregates her zaman nesne listesi olmalıdır; tek nesne veya null yazma.
+Tam dağılım isteyen toplama sorgularında limit=1000 kullan; kullanıcının istemediği gruplama alanlarını ekleme.
 Limit 1–1000 arasında tam sayı; sıralama {{"column":"<alan/aggregate alias>","dir":"desc"}}.
 İstenen alan şemada yoksa {{"unsupported":"Türkçe gerekçe"}} döndür; ilgisiz sorgu üretme.
 """

@@ -143,6 +143,13 @@ class QueryAgent:
                 raise ValueError("Sorgu planı JSON nesnesi olmalıdır.")
             if "unsupported" in query_json:
                 raise ValueError(f"Desteklenmeyen analiz: {query_json['unsupported']}")
+            # Optional nulls and singleton objects are equivalent representations
+            # produced by the model; SQL expressions and invalid fields stay rejected.
+            for field in ("columns", "aggregates", "group_by", "filters", "order_by", "joins", "array_joins"):
+                if field in query_json and query_json[field] is None:
+                    query_json.pop(field)
+                elif field in {"aggregates", "filters", "order_by", "joins", "array_joins"} and isinstance(query_json.get(field), dict):
+                    query_json[field] = [query_json[field]]
             return query_json
         except json.JSONDecodeError as e:
             logger.error(f"LLM çıktısı JSON olarak ayrıştırılamadı: {raw_text}")
