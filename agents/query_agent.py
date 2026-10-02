@@ -14,6 +14,11 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.messages import SystemMessage
 from agents.data_schema import DATA_CONTEXT, validate_query_schema
 from sqlalchemy import inspect
+from agents.sql_safety import validate_plan, read_query, database_path, DEFAULT_ROWS
+import copy
+import time
+from pathlib import Path
+from sqlalchemy.engine import make_url
 from agents.credentials import configure_openai_credentials
 import streamlit as st
 
@@ -81,6 +86,8 @@ BEKLENEN JSON ÇIKTI FORMATI:
 
 Yalnızca saf JSON formatında yanıt döndür. Markdown kod blokları veya açıklama metni KOYMA.
 Sorguya uygun bir limit belirle (örneğin 10).
+JOIN birden fazla koşul gerektiriyorsa on alanında left/right nesnelerinin listesini kullan.
+Örnek: "on": [{"left": "a.tweet_id", "right": "b.tweet_id"}, {"left": "a.prediction_month", "right": "b.prediction_month"}].
 İstenen alan şemada yoksa sorgu uydurmak yerine {"unsupported": "Türkçe gerekçe"} döndür.
 """
 
@@ -125,46 +132,26 @@ def _contains_lit(v: Any) -> str:
 
 
 def _compile_join(j: dict[str, Any]) -> str:
-    """JSON nesnesindeki JOIN tanımını SQL ifadesine dönüştürür."""
-    if not isinstance(j, dict):
-        return ""
-    j_type = (j.get("type") or "INNER").upper().strip()
-    if j_type not in ("INNER", "LEFT", "RIGHT", "CROSS", "FULL", "OUTER"):
-        j_type = "INNER"
-    
-    j_table = j.get("table")
-    if not j_table:
-        return ""
-    
-    q_table = quote_ident(str(j_table))
-    alias = j.get("alias")
-    if alias:
-        q_table += f" AS {quote_ident(str(alias))}"
-        
-    on = j.get("on")
-    if isinstance(on, dict):
-        left = quote_ident(str(on.get("left") or on.get("left_col") or ""))
-        right = quote_ident(str(on.get("right") or on.get("right_col") or ""))
-        return f"{j_type} JOIN {q_table} ON {left} = {right}"
-    elif isinstance(on, (list, tuple)) and len(on) == 2:
-        left = quote_ident(str(on[0]))
-        right = quote_ident(str(on[1]))
-        return f"{j_type} JOIN {q_table} ON {left} = {right}"
-    elif isinstance(on, str) and "=" in on:
-        parts = on.split("=", 1)
-        left = quote_ident(parts[0].strip())
-        right = quote_ident(parts[1].strip())
-        return f"{j_type} JOIN {q_table} ON {left} = {right}"
-    elif on:
-        return f"{j_type} JOIN {q_table} ON {on}"
-    return f"{j_type} JOIN {q_table}"
+    on = j["on"]
+    conditions = on if isinstance(on, list) else [on]
+    table = quote_ident(j["table"])
+    if j.get("alias"):
+        table += f" AS {quote_ident(j['alias'])}"
+    clause = " AND ".join(f"{quote_ident(c['left'])} = {quote_ident(c['right'])}" for c in conditions)
+    return f"{j.get('type', 'INNER').upper()} JOIN {table} ON {clause}"
 
 
-def compile_json_to_sql(query_json: dict[str, Any], dialect: str = "sqlite") -> str:
+def compile_json_to_sql(query_json: dict[str, Any], dialect: str = "sqlite", parameters: Optional[list] = None) -> str:
     """
     Yapılandırılmış JSON sorgu nesnesini deterministik ve güvenli SQL ifadesine dönüştürür.
     JOIN'ler, demografik eşleşmeler ve toplama fonksiyonları tam desteklenir.
     """
+    validate_plan(query_json)
+    def literal(value):
+        if parameters is None:
+            return _lit(value)
+        parameters.append(value)
+        return "?"
     table = query_json.get("table")
     if not table:
         raise ValueError("JSON sorgusunda zorunlu 'table' alanı eksik!")
@@ -242,25 +229,29 @@ def compile_json_to_sql(query_json: dict[str, Any], dialect: str = "sqlite") -> 
                 subquery_dict = dict(val)
                 if not subquery_dict.get("columns") and subquery_dict.get("column"):
                     subquery_dict["columns"] = [subquery_dict.pop("column")]
-                sub_sql = compile_json_to_sql(subquery_dict, dialect=dialect)
+                sub_sql = compile_json_to_sql(subquery_dict, dialect=dialect, parameters=parameters)
                 where_parts.append(f"{q_col} {sql_op} ({sub_sql})")
             elif isinstance(val, (list, tuple)) and len(val) == 1 and isinstance(val[0], dict) and "table" in val[0]:
                 subquery_dict = dict(val[0])
                 if not subquery_dict.get("columns") and subquery_dict.get("column"):
                     subquery_dict["columns"] = [subquery_dict.pop("column")]
-                sub_sql = compile_json_to_sql(subquery_dict, dialect=dialect)
+                sub_sql = compile_json_to_sql(subquery_dict, dialect=dialect, parameters=parameters)
                 where_parts.append(f"{q_col} {sql_op} ({sub_sql})")
             else:
                 vals = val if isinstance(val, (list, tuple)) else [val]
-                if vals:
-                    where_parts.append(f"{q_col} {sql_op} ({', '.join(_lit(v) for v in vals)})")
+                if not vals:
+                    where_parts.append("0 = 1" if sql_op == "IN" else "1 = 1")
+                else:
+                    where_parts.append(f"{q_col} {sql_op} ({', '.join(literal(v) for v in vals)})")
         elif sql_op == "BETWEEN":
             if isinstance(val, (list, tuple)) and len(val) == 2:
-                where_parts.append(f"{q_col} BETWEEN {_lit(val[0])} AND {_lit(val[1])}")
+                where_parts.append(f"{q_col} BETWEEN {literal(val[0])} AND {literal(val[1])}")
         elif op_key in ("LIKE", "ILIKE"):
-            where_parts.append(f"{q_col} LIKE {_contains_lit(val)}")
+            where_parts.append(f"{q_col} LIKE {literal(chr(37) + str(val) + chr(37))}")
+        elif val is None and op_key in ("EQ", "NEQ"):
+            where_parts.append(f"{q_col} IS {'NOT ' if op_key == 'NEQ' else ''}NULL")
         else:
-            where_parts.append(f"{q_col} {sql_op} {_lit(val)}")
+            where_parts.append(f"{q_col} {sql_op} {literal(val)}")
 
     if where_parts:
         sql += " WHERE " + " AND ".join(where_parts)
@@ -315,7 +306,14 @@ class QueryAgent:
     @property
     def db(self) -> SQLDatabase:
         if self._db is None:
-            self._db = SQLDatabase.from_uri(self.db_uri)
+            url = make_url(self.db_uri)
+            if url.get_backend_name() != "sqlite" or not url.database:
+                raise ValueError("Dosya tabanlı SQLite gereklidir.")
+            name = url.database.removeprefix("file:").split("?", 1)[0]
+            path = Path(name).resolve()
+            if not path.is_file():
+                raise ValueError("SQLite veritabanı bulunamadı.")
+            self._db = SQLDatabase.from_uri(f"sqlite:///file:{path}?mode=ro&uri=true", sample_rows_in_table_info=0)
         return self._db
 
     @property
@@ -338,7 +336,7 @@ class QueryAgent:
                     pass
             if not key:
                 raise ValueError("OPENAI_API_KEY bulunamadı. Lütfen ortam değişkeni veya st.secrets üzerinden tanımlayın.")
-            self._llm = ChatOpenAI(model=self.model_name, temperature=0, api_key=key)
+            self._llm = ChatOpenAI(model=self.model_name, temperature=0, api_key=key, timeout=30, max_retries=1)
         return self._llm
 
     def generate_query_json(self, question: str) -> dict[str, Any]:
@@ -369,21 +367,34 @@ class QueryAgent:
             raise ValueError(f"Geçersiz JSON formatı: {e}") from e
 
     def execute_nl_query(self, question: str) -> dict[str, Any]:
-        """Doğal dil sorusunu JSON ve SQL derleme adımlarından geçirip veritabanında çalıştırır."""
-        query_json = self.generate_query_json(question)
+        return self.execute_plan(self.generate_query_json(question), question)
+
+    def execute_plan(self, query_json: dict, question: str = "") -> dict[str, Any]:
+        from agents.results import build_result
+        started = time.monotonic()
+        query_json = copy.deepcopy(query_json)
+        validate_plan(query_json)
+        parameters = []
         if isinstance(self.db, SQLDatabase):
             inspector = inspect(self.db._engine)
             tables = {name: {col["name"] for col in inspector.get_columns(name)}
                       for name in self.db.get_usable_table_names()}
             validate_query_schema(query_json, tables)
-        sql = compile_json_to_sql(query_json)
-        result = self.db.run(sql)
-        return {
-            "question": question,
-            "json_query": query_json,
-            "sql": sql,
-            "result": result
-        }
+            # Fetch one extra row to expose a clipped result, including requested top-N.
+            row_limit = query_json.get("limit", DEFAULT_ROWS)
+            executed = copy.deepcopy(query_json)
+            executed.pop("limit", None)
+            sql = compile_json_to_sql(executed, parameters=parameters) + f" LIMIT {row_limit + 1}"
+            columns, rows, truncated = read_query(database_path(self.db), sql, parameters,
+                                                  max_rows=row_limit, allowed_tables=set(tables))
+            result = build_result(question, query_json, sql, parameters, columns, rows, truncated)
+        else:
+            # Dependency-injected test adapters retain the legacy return contract.
+            sql = compile_json_to_sql(query_json)
+            result = {"question": question, "json_query": query_json, "sql": sql, "result": self.db.run(sql)}
+        logger.info("query_completed", extra={"duration_ms": round((time.monotonic()-started)*1000, 2),
+                    "row_count": len(result.get("rows", [])), "status": result.get("status", "success")})
+        return result
 
 
 def get_query_agent(db_uri: str = "sqlite:///insight_generation_bot.db", model_name: str = "gpt-4o") -> QueryAgent:

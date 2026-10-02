@@ -2,12 +2,10 @@ import os
 import json
 import logging
 from typing import Optional, Dict, Any, List, Tuple
-from langchain_community.utilities.sql_database import SQLDatabase
-from langchain_community.agent_toolkits import create_sql_agent
-from langchain_openai import ChatOpenAI, OpenAIEmbeddings
-from langchain_pinecone import PineconeVectorStore
-from langchain_core.tools import Tool
+from langchain_openai import ChatOpenAI
 from langchain_core.prompts import PromptTemplate
+from langchain_core.messages import SystemMessage, HumanMessage
+from langchain_core.runnables import RunnableLambda
 import streamlit as st
 
 from agents.query_agent import QueryAgent
@@ -55,6 +53,9 @@ Görevlerin:
 class SynthesisEngine:
     def __init__(self, llm_instance: ChatOpenAI):
         self.llm = llm_instance
+        self.guarded_llm = RunnableLambda(lambda value: self.llm.invoke([
+            SystemMessage(content=get_domain_context_prompt()),
+            HumanMessage(content=value.to_string())]))
 
     def synthesize_executive_summary(self, question: str, sql_evidence: str) -> str:
         prompt = PromptTemplate.from_template(
@@ -67,7 +68,7 @@ class SynthesisEngine:
             "2. En fazla 3-4 cümlelik vurucu, profesyonel bir Yönetici Özeti (Final Insight) oluştur.\n"
             "3. En sona yönetici için 1 adet somut stratejik aksiyon adımı ekle."
         )
-        chain = prompt | self.llm
+        chain = prompt | self.guarded_llm
         return chain.invoke({
             "question": question,
             "evidence": sql_evidence,
@@ -80,23 +81,12 @@ class SynthesisEngine:
         Varsayımsal konuşmaz; verideki reel sayıları kanıt göstererek karne üretir.
         """
         prompt = PromptTemplate.from_template(
-            "Sen Baş Ekonometrist ve Kıdemli Pazarlama Direktörüsün (CMO).\n\n"
-            "YARIŞAN HİPOTEZLER:\n"
-            "- H0 (Sıfır Hipotezi): {h0}\n"
-            "- H1 (Birincil Hipotez): {h1}\n"
-            "- H2 (Rakip Hipotez): {h2}\n\n"
-            "VERİTABANINDAN TOPLANAN GERÇEK KANITLAR:\n{evidence}\n\n"
-            "PAZARLAMA KURALLARI:\n{domain_rules}\n\n"
-            "GÖREVİN:\n"
-            "1. KESİNLİKLE VARSAYIMSAL ('Eğer yüksekse', 'varsayarsak', 'olabilir') KONUŞMA. "
-            "   SQL çıktısında hangi sayılar, hacimler veya sıfırlar varsa doğrudan bu reel rakamları referans ver.\n"
-            "2. KARŞILAŞTIRMALI HİPOTEZ KARNESİ (Markdown Tablosu formatında üret):\n"
-            "   | Hipotez | Açıklama | Karar ([KABUL] / [KISMEN] / [REDDEDİLDİ]) | Destek Skoru (%) | Verideki Somut Kanıt (Sayılar/Metrikler) |\n"
-            "3. KAZANAN HİPOTEZ VE DERİN ANALİZ: Kazanan hipotezi ilan et; funnel daralmasını ve verideki sayısal çöküşü pazarlama mantığıyla açıkla.\n"
-            "4. YÖNETİCİ EYLEM PLANI: 2 maddelik net ve somut aksiyon adımı öner.\n\n"
-            "Yanıtını profesyonel, net ve Türkçe olarak sun."
+            "Hipotezler: H0={h0}; H1={h1}; H2={h2}.\nKanıtlar: {evidence}\n"
+            "{domain_rules}\nHer hipotezi kanıt ve sınırlama tablosuyla değerlendir. "
+            "Hesaplanmış istatistiksel test yoksa yalnızca betimsel değerlendirme yap. "
+            "Destek yüzdesi veya kazanan hipotez uydurma. Sonuçları Türkçe yaz."
         )
-        chain = prompt | self.llm
+        chain = prompt | self.guarded_llm
         return chain.invoke({
             "h0": hypotheses.get("H0", "Sıfır hipotezi"),
             "h1": hypotheses.get("H1", "Birincil hipotez"),
@@ -107,7 +97,7 @@ class SynthesisEngine:
 
     def verify_hypothesis(self, hypothesis: str, sql_evidence: str) -> str:
         prompt_text = build_hypothesis_synthesis_prompt(hypothesis, sql_evidence)
-        response = self.llm.invoke(prompt_text)
+        response = self.llm.invoke([SystemMessage(content=get_domain_context_prompt()), HumanMessage(content=prompt_text)])
         return response.content.strip()
 
     def synthesize_predictive_insight(self, topic: str, time_series_evidence: str) -> str:
@@ -117,10 +107,10 @@ class SynthesisEngine:
             "Dönemsel Zaman Serisi Verileri:\n{evidence}\n\n"
             "GÖREVİN:\n"
             "1. Geçmiş trendlerin yönünü açıkla.\n"
-            "2. Gelecek dönem için risk ve fırsat projeksiyonu yap.\n"
+            "2. Bu yalnızca nitel senaryodur; sayısal tahmin veya güven aralığı uydurma.\n"
             "3. Olası riski bertaraf etmek için 2 maddelik proaktif strateji öner."
         )
-        chain = prompt | self.llm
+        chain = prompt | self.guarded_llm
         return chain.invoke({
             "topic": topic,
             "evidence": time_series_evidence
@@ -133,39 +123,17 @@ def get_hybrid_agent(
     reasoning_model: str = "gpt-4o"
 ):
     configure_openai_credentials()
-    db = SQLDatabase.from_uri(db_uri)
+    db = QueryAgent(db_uri=db_uri).db
     
     # 1. Kademe: SQL ve sorgu planlayıcı model
-    llm_fast = ChatOpenAI(model=fast_model, temperature=0)
     
     # 2. Kademe: Stratejik sentez ve hipotez doğrulama modeli
-    llm_reasoning = ChatOpenAI(model=reasoning_model, temperature=0)
+    llm_reasoning = ChatOpenAI(model=reasoning_model, temperature=0, timeout=30, max_retries=1)
     
-    embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
+    # Retrieval is lazy and goes through AnalysisService, not an unrestricted SQL executor.
+    from agents.analysis_service import DocumentSearch
+    agent_executor = DocumentSearch()
 
-    index_name = "pazarlama-verileri" 
-    extra_tools = []
-    try:
-        vectorstore = PineconeVectorStore(index_name=index_name, embedding=embeddings)
-        retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
-        rag_tool = Tool(
-            name="dokuman_arama_araci",
-            description="Markanın iade politikaları, PDF strateji raporları veya SQL veritabanında olmayan yapılandırılmamış metinleri araştırmak için bu aracı kullan.",
-            func=retriever.invoke
-        )
-        extra_tools.append(rag_tool)
-    except Exception as e:
-        logger.warning(f"RAG sistemine bağlanılamadı: {e}")
-
-    agent_executor = create_sql_agent(
-        llm=llm_fast,
-        db=db,
-        agent_type="openai-tools",
-        extra_tools=extra_tools,
-        prefix=SQL_AGENT_PREFIX,
-        verbose=False
-    )
-    
     query_agent = QueryAgent(db_uri=db_uri, model_name=fast_model)
     rewrite_agent = RewriteNLAgent(model_name=fast_model)
     synthesis_engine = SynthesisEngine(llm_reasoning)

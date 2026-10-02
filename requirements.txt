@@ -6,3 +6,5 @@ langchain-community
 langchain-core
 langchain-openai
 langchain-pinecone
+scipy>=1.14,<2
+openpyxl>=3.1,<4

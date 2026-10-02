@@ -25,6 +25,7 @@ Dönem kapsamını sorgulayarak kontrol et; mevcut olmayan dönem için veri yok
 def validate_query_schema(plan: dict, tables: dict[str, set[str]]) -> None:
     """Reject references that are absent or ambiguous in the live schema."""
     sources = {}
+    source_tables = {}
     for source in [plan, *(plan.get("joins") or [])]:
         table = source.get("table")
         if table not in tables:
@@ -33,6 +34,7 @@ def validate_query_schema(plan: dict, tables: dict[str, set[str]]) -> None:
         if name in sources:
             raise ValueError(f"Tekrarlanan tablo adı veya alias: {name}")
         sources[name] = tables[table]
+        source_tables[name] = table
 
     def column(name, output_aliases=()):
         if not isinstance(name, str) or not name:
@@ -76,11 +78,29 @@ def validate_query_schema(plan: dict, tables: dict[str, set[str]]) -> None:
         if isinstance(on, dict):
             column(on.get("left") or on.get("left_col"))
             column(on.get("right") or on.get("right_col"))
-        elif isinstance(on, (list, tuple)) and len(on) == 2:
-            column(on[0])
-            column(on[1])
+        elif isinstance(on, list) and all(isinstance(c, dict) for c in on):
+            for condition in on:
+                column(condition.get("left"))
+                column(condition.get("right"))
         elif isinstance(on, str) and "=" in on:
             for name in on.split("=", 1):
                 column(name.strip())
         elif (join.get("type") or "INNER").upper() != "CROSS" or on:
             raise ValueError("JOIN için şemadaki iki sütunu eşleştiren koşul gerekli.")
+        conditions = on if isinstance(on, list) else [on]
+        matching_pairs = {}
+        for condition in conditions:
+            if not isinstance(condition, dict):
+                continue
+            left, right = condition.get("left", ""), condition.get("right", "")
+            if "." not in left or "." not in right:
+                continue
+            lsource, lcol = left.split(".", 1)
+            rsource, rcol = right.split(".", 1)
+            pair = frozenset((source_tables.get(lsource), source_tables.get(rsource)))
+            if "trending_topics" in pair and pair.intersection({"consumer_journey", "emotion_analysis"}):
+                matching_pairs.setdefault(pair, set())
+                if lcol == rcol:
+                    matching_pairs[pair].add(lcol)
+        if any(not {"tweet_id", "prediction_month"}.issubset(cols) for cols in matching_pairs.values()):
+            raise ValueError("Konu JOIN'i tweet_id ve prediction_month eşleşmelerini birlikte gerektirir.")

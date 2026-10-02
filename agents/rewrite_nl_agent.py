@@ -32,7 +32,7 @@ class RewriteNLAgent:
                         os.environ["OPENAI_API_KEY"] = api_key
                 except Exception:
                     pass
-            self._llm = ChatOpenAI(model=self.model_name, temperature=self.temperature)
+            self._llm = ChatOpenAI(model=self.model_name, temperature=self.temperature, timeout=30, max_retries=1)
         return self._llm
 
     def contextualize_query(self, current_question: str, chat_history: List[Dict[str, str]]) -> str:
@@ -47,7 +47,10 @@ class RewriteNLAgent:
         # Son 3 etkileşimi bağlam olarak al
         history_text = ""
         for item in chat_history[-3:]:
-            history_text += f"Kullanıcı: {item.get('user', '')}\nAsistan Bulgusu: {item.get('assistant_summary', '')}\n---\n"
+            history_text += json.dumps({"user": item.get("user", item.get("question", "")),
+                                       "resolved_query": item.get("resolved_query", ""),
+                                       "plans": item.get("context", []),
+                                       "summary": item.get("assistant_summary", item.get("insight", ""))}, ensure_ascii=False) + "\n"
 
         context_prompt = PromptTemplate.from_template(
             "Sen bir Konuşma Bağlamı ve Takip Sorusu Çözümleyicisisin.\n\n"
@@ -66,6 +69,17 @@ class RewriteNLAgent:
         }).content.strip()
 
         return resolved_q if resolved_q else current_question
+
+    def route_question(self, question: str) -> str:
+        prompt = PromptTemplate.from_template(
+            "Soruyu kaynak türüne göre sınıflandır. Yalnızca sql, documents veya hybrid yaz. "
+            "Sayım, demografi, duygu/yolculuk/konu istatistiği sql; PDF, politika, belge documents; "
+            "hem belge hem veritabanı kanıtı isteyen sorular hybrid. Soru: {question}"
+        )
+        route = (prompt | self.llm).invoke({"question": question}).content.strip().lower()
+        if route not in {"sql", "documents", "hybrid"}:
+            raise ValueError("Soru için geçerli kaynak yönlendirmesi üretilemedi.")
+        return route
 
     def assess_clarification_need(self, question: str, schema: str) -> Dict[str, Any]:
         prompt = PromptTemplate.from_template(
@@ -115,7 +129,8 @@ class RewriteNLAgent:
             "Sen kıdemli bir veri analistisin. Veritabanı şeması:\n{schema}\n\n"
             "Veri sözlüğü:\n{data_context}\n\n"
             "Soru: {question}\n\n"
-            "GÖREVİN: Bu soruyu çözecek 2 net alt soru üret.\n"
+            "GÖREVİN: Bu soruyu çözecek en az sayıda net alt soru üret (1–4). Tek sorgu yeterliyse yalnızca bir soru üret.\n"
+            "Kullanıcının istemediği konu, tablo veya analizleri ekleme.\n"
             "1. Yalnızca mevcut alanları ve veri sözlüğündeki ilişkileri kullan.\n"
             "2. Konu dağılımı ile kanıtlanmış kök nedeni ayır; olmayan ürün/bot filtreleri isteme.\n"
             "Soruların başına tire (-) koy."
