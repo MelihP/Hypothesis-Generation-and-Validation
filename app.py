@@ -160,6 +160,16 @@ mode = st.sidebar.radio("Çalışma modu", MODES)
 source_name = st.sidebar.selectbox("Analiz kaynağı", list(SOURCE_OPTIONS))
 source = SOURCE_OPTIONS[source_name]
 st.sidebar.caption("Veri erişimi salt okunur; en fazla 1.000 sonuç satırı. Belgeler için Pinecone bağlantısı gerekir.")
+from agents.config import get_secret
+st.sidebar.caption("Pinecone: " + ("anahtar tanımlı" if get_secret("PINECONE_API_KEY") else "anahtar tanımlı değil"))
+if st.sidebar.button("Bağlantıları yeniden yükle"):
+    query_engine.clear()
+    analysis_engine.clear()
+    catalog_data.clear()
+    selected_periods.clear()
+    for state_key in ("answers", "chat_history", "pending_clarification"):
+        st.session_state.pop(state_key, None)
+    st.rerun()
 try:
     catalog = catalog_data()
 except Exception as exc:

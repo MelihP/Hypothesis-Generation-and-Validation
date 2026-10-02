@@ -1,19 +1,9 @@
-"""Resolve supported OpenAI bindings without logging or persisting secrets."""
+"""Resolve OpenAI bindings; refreshed Streamlit Secrets take precedence."""
 import os
-
-import streamlit as st
+from agents.config import get_secret
 
 
 def configure_openai_credentials() -> None:
-    if os.environ.get("OPENAI_API_KEY"):
-        return
-    if os.environ.get("LLM_API_KEY"):
-        os.environ["OPENAI_API_KEY"] = os.environ["LLM_API_KEY"]
-        return
-    try:
-        for name in ("OPENAI_API_KEY", "LLM_API_KEY"):
-            if st.secrets.get(name):
-                os.environ["OPENAI_API_KEY"] = st.secrets[name]
-                return
-    except (FileNotFoundError, st.errors.StreamlitSecretNotFoundError):
-        pass
+    key = get_secret("OPENAI_API_KEY") or get_secret("LLM_API_KEY")
+    if key:
+        os.environ["OPENAI_API_KEY"] = key

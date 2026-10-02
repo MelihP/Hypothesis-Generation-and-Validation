@@ -91,3 +91,14 @@ class TestAppWorkflows(unittest.TestCase):
             self.assertEqual(history[-1]["raw_question"], "Yeni ve genel soru")
             self.assertIn("Yaş grupları", history[-1]["answer"]["resolved_query"])
             self.assertEqual(history[-1]["answer"]["context"][0]["table"], "demographics")
+
+    def test_reload_clears_previous_source_results_and_history(self):
+        app = self.explorer(self.app())
+        app.session_state["answers"] = {"old_source":"stale result"}
+        app.session_state["chat_history"] = [{"user":"old source question"}]
+        app.session_state["pending_clarification"] = {"raw":"old source question"}
+        widget(app.button,"Bağlantıları yeniden yükle").click().run(timeout=20)
+        self.assertEqual(len(app.exception),0)
+        self.assertEqual(app.session_state["answers"],{})
+        self.assertEqual(app.session_state["chat_history"],[])
+        self.assertIsNone(app.session_state["pending_clarification"])

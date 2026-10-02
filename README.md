@@ -70,3 +70,34 @@ docker rm -f hypothesis-clickhouse-test
 ```
 
 GitHub Actions aynı testleri ayrı bir ClickHouse servisiyle çalıştırır. Canlı Streamlit güncellemesi için bu değişikliklerin uygulamanın izlediği dala (bu depoda `work`) birleştirilmesi ve uygulamanın yeniden başlatılması gerekir.
+
+## Streamlit Secrets ve Pinecone uyumu
+
+Anahtarlar bu uygulamanın Streamlit **Settings → Secrets** bölümünde veya çalışma ortamında tanımlanmalıdır. GitHub Actions Secrets, Streamlit uygulamasına otomatik aktarılmaz. Secrets güncellendikten sonra uygulamayı yeniden başlatın veya **Bağlantıları yeniden yükle** düğmesini kullanın; önceki veri kaynağının sohbet ve sonuçları temizlenir. Pinecone için arayüzdeki “anahtar tanımlı” bilgisi yalnızca yapılandırma varlığını gösterir, canlı bağlantı doğrulaması değildir.
+
+Mevcut düz anahtarlar korunur. İsterseniz Streamlit TOML bölümleri de kullanılabilir:
+
+```toml
+[openai]
+api_key = "your-openai-key"
+
+[pinecone]
+api_key = "your-pinecone-key"
+index_name = "pazarlama-verileri"
+namespace = ""
+embedding_model = "text-embedding-3-small"
+text_key = "text"
+
+[clickhouse]
+host = "your-host"
+port = 8443
+username = "readonly-user"
+password = "your-password"
+database = "your-database"
+secure = true
+verify = true
+```
+
+Düz Secrets değerleri bölüm ayarlarından, her ikisi ortam değişkenlerinden önce okunur. Pinecone'da index adı, namespace, metin metadata alanı (`PINECONE_TEXT_KEY`, varsayılan `text`) ve embedding modeli mevcut belgelerin yükleme ayarlarıyla aynı olmalıdır. Varsayılan model `text-embedding-3-small` olarak korunur. İsteğe bağlı `PINECONE_EMBEDDING_DIMENSIONS` boyutu index ile aynı olmalı; yalnızca text-embedding-3 modelleri özel boyutu destekler. Yanlış namespace boş sonuç, yanlış model/boyut başarısız veya alakasız arama üretebilir. Var olan belgeler bu değişiklikle yeniden yüklenmez.
+
+**Otomatik otonom analiz**, sorusu veritabanı şemasından üretildiği için SQL kullanır. Pinecone'u otonom modda da kullanmak için **Belgeler** veya **Veritabanı + Belgeler** seçin. Manuel moddaki otomatik yönlendirme SQL/doküman/hibrit seçimini sürdürür. Belgelerden dönen kaynaklar ve atıflar doğrulanır; eksik kanıttan özet üretilmez.

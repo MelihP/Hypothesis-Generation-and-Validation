@@ -1,7 +1,6 @@
 """SQL/document routing, source citations, and evidence-aware orchestration."""
 import json
 import logging
-import os
 import re
 
 from langchain_openai import OpenAIEmbeddings
@@ -28,10 +27,28 @@ class DocumentSearch:
             key = get_secret("PINECONE_API_KEY")
             if not key:
                 raise ValueError("Belge araması için PINECONE_API_KEY gerekli; SQL analizi kullanılabilir.")
-            os.environ["PINECONE_API_KEY"] = key
-            vectorstore = PineconeVectorStore(index_name=get_secret("PINECONE_INDEX_NAME", get_secret("PINECONE_INDEX", "pazarlama-verileri")),
-                         embedding=OpenAIEmbeddings(model="text-embedding-3-small", request_timeout=30, max_retries=1),
-                         namespace=get_secret("PINECONE_NAMESPACE", ""))
+            from agents.credentials import configure_openai_credentials
+            configure_openai_credentials()
+            options = {"model": get_secret("PINECONE_EMBEDDING_MODEL", "text-embedding-3-small"),
+                       "request_timeout": 30, "max_retries": 1}
+            dimensions = get_secret("PINECONE_EMBEDDING_DIMENSIONS")
+            if dimensions:
+                try:
+                    dimensions = int(dimensions)
+                    if dimensions < 1:
+                        raise ValueError()
+                except ValueError:
+                    raise ValueError("PINECONE_EMBEDDING_DIMENSIONS pozitif tam sayı olmalıdır.") from None
+                if not options["model"].startswith("text-embedding-3"):
+                    raise ValueError("Özel embedding boyutu yalnızca text-embedding-3 modellerinde desteklenir.")
+                options["dimensions"] = dimensions
+            vectorstore = PineconeVectorStore(
+                pinecone_api_key=key,
+                index_name=get_secret("PINECONE_INDEX_NAME", get_secret("PINECONE_INDEX", "pazarlama-verileri")),
+                host=get_secret("PINECONE_HOST") or None,
+                text_key=get_secret("PINECONE_TEXT_KEY", "text"),
+                embedding=OpenAIEmbeddings(**options),
+                namespace=get_secret("PINECONE_NAMESPACE", ""))
             self.retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
         documents = self.retriever.invoke(question)
         rows = []

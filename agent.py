@@ -32,10 +32,6 @@ except ImportError:
 
 
 # --- 1. API ANAHTARLARI & ORTAM DEĞİŞKENLERİ ---
-for key in ["OPENAI_API_KEY", "PINECONE_API_KEY", "OPENAI_MODEL_NAME"]:
-    val = get_secret(key)
-    if val:
-        os.environ[key] = val
 
 
 from agents.prompts.query_prompts import SQL_AGENT_PREFIX
@@ -98,7 +94,9 @@ def get_database_connection(custom_uri=None):
     """Configured ClickHouse never silently turns into an unrelated SQLite dataset."""
     from sqlalchemy.engine import make_url
     import clickhouse_connect
-    local_path = Path(__file__).resolve().parent / "insight_generation_bot.db"
+    local_path = Path(get_secret("SQLITE_DB_PATH", "insight_generation_bot.db"))
+    if not local_path.is_absolute():
+        local_path = Path(__file__).resolve().parent / local_path
     if custom_uri and "clickhouse" not in custom_uri.lower():
         name = make_url(custom_uri).database
         if not name:
