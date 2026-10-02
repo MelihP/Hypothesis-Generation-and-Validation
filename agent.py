@@ -2,19 +2,23 @@ import os
 import json
 import logging
 from typing import Optional, Dict, Any, List, Tuple
+from langchain_community.utilities.sql_database import SQLDatabase
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import PromptTemplate
 from langchain_core.messages import SystemMessage, HumanMessage
 from langchain_core.runnables import RunnableLambda
+from agents.credentials import configure_openai_credentials
+from agents.config import get_secret, enabled
+from agents.database import SQLiteBackend, ClickHouseBackend
+from pathlib import Path
 import streamlit as st
 
-from agents.query_agent import QueryAgent
+from agents.query_agent import QueryAgent, CLICKHOUSE_CORE_TABLES
 from agents.rewrite_nl_agent import RewriteNLAgent
-from agents.data_schema import DATA_CONTEXT
-from agents.credentials import configure_openai_credentials
+from logger import logger, log_db_fallback
 
 try:
-    from agents.domain_rules import (
+    from agents.prompts.domain_prompts import (
         get_domain_context_prompt,
         build_hypothesis_synthesis_prompt,
         MARKETING_CONCEPT_DEFINITIONS,
@@ -22,52 +26,36 @@ try:
     )
 except ImportError:
     def get_domain_context_prompt() -> str:
-        return DATA_CONTEXT
+        return "Pazarlama hunisinde Consideration düşüşü funnel daralmasını gösterir. Kök neden için topics/products sütunlarına odaklan."
     def build_hypothesis_synthesis_prompt(h: str, e: str) -> str:
         return f"Hipotez: {h}\nKanıtlar: {e}\nLütfen hipotezi doğrula ve açıkla."
 
-logger = logging.getLogger(__name__)
 
-# --- API ANAHTARLARI ---
-try:
-    if hasattr(st, "secrets") and "OPENAI_API_KEY" in st.secrets:
-        os.environ["OPENAI_API_KEY"] = st.secrets["OPENAI_API_KEY"]
-    if hasattr(st, "secrets") and "PINECONE_API_KEY" in st.secrets:
-        os.environ["PINECONE_API_KEY"] = st.secrets["PINECONE_API_KEY"]
-except Exception:
-    pass
+# --- 1. API ANAHTARLARI & ORTAM DEĞİŞKENLERİ ---
+for key in ["OPENAI_API_KEY", "PINECONE_API_KEY", "OPENAI_MODEL_NAME"]:
+    val = get_secret(key)
+    if val:
+        os.environ[key] = val
 
-SQL_AGENT_PREFIX = f"""
-Sen üst düzey bir Pazarlama Veri Analisti ve SQL Danışmanısın.
-Görevlerin:
-1. VERİ SÖZLÜĞÜ:
-{DATA_CONTEXT}
-2. KÖK SEBEP: Konu ve demografi dağılımlarını betimle; veriyle kanıtlanmayan ürün veya nedensellik iddiaları üretme.
-3. KAVRAMSAL KURALLAR:
-{get_domain_context_prompt()}
-"""
 
-# --- SENTEZ MOTORU ---
-# agent.py dosyasındaki SynthesisEngine sınıfını şu şekilde güncelleyin:
+from agents.prompts.query_prompts import SQL_AGENT_PREFIX
+from agents.prompts.synthesis_prompts import (
+    EXECUTIVE_SUMMARY_PROMPT,
+    COMPETING_HYPOTHESES_EVALUATION_PROMPT,
+    PREDICTIVE_INSIGHT_PROMPT,
+)
+
+
+# --- 2. SENTEZ MOTORU (SYNTHESIS ENGINE) ---
 
 class SynthesisEngine:
     def __init__(self, llm_instance: ChatOpenAI):
         self.llm = llm_instance
         self.guarded_llm = RunnableLambda(lambda value: self.llm.invoke([
-            SystemMessage(content=get_domain_context_prompt()),
-            HumanMessage(content=value.to_string())]))
+            SystemMessage(content=get_domain_context_prompt()), HumanMessage(content=value.to_string())]))
 
     def synthesize_executive_summary(self, question: str, sql_evidence: str) -> str:
-        prompt = PromptTemplate.from_template(
-            "Sen kıdemli bir Pazarlama Direktörüsün (CMO).\n"
-            "Soru: {question}\n\n"
-            "Veritabanından Toplanan Kanıtlar:\n{evidence}\n\n"
-            "{domain_rules}\n\n"
-            "GÖREVİN:\n"
-            "1. Mevcut topic_name konu dağılımını ve demografik eğilimleri betimle; ürün bilgisi veya kanıtlanmamış kök neden uydurma.\n"
-            "2. En fazla 3-4 cümlelik vurucu, profesyonel bir Yönetici Özeti (Final Insight) oluştur.\n"
-            "3. En sona yönetici için 1 adet somut stratejik aksiyon adımı ekle."
-        )
+        prompt = PromptTemplate.from_template(EXECUTIVE_SUMMARY_PROMPT)
         chain = prompt | self.guarded_llm
         return chain.invoke({
             "question": question,
@@ -80,12 +68,7 @@ class SynthesisEngine:
         H0, H1 ve H2 hipotezlerini toplanan SQL verisi karşısında eşzamanlı yarıştırır.
         Varsayımsal konuşmaz; verideki reel sayıları kanıt göstererek karne üretir.
         """
-        prompt = PromptTemplate.from_template(
-            "Hipotezler: H0={h0}; H1={h1}; H2={h2}.\nKanıtlar: {evidence}\n"
-            "{domain_rules}\nHer hipotezi kanıt ve sınırlama tablosuyla değerlendir. "
-            "Hesaplanmış istatistiksel test yoksa yalnızca betimsel değerlendirme yap. "
-            "Destek yüzdesi veya kazanan hipotez uydurma. Sonuçları Türkçe yaz."
-        )
+        prompt = PromptTemplate.from_template(COMPETING_HYPOTHESES_EVALUATION_PROMPT)
         chain = prompt | self.guarded_llm
         return chain.invoke({
             "h0": hypotheses.get("H0", "Sıfır hipotezi"),
@@ -101,42 +84,78 @@ class SynthesisEngine:
         return response.content.strip()
 
     def synthesize_predictive_insight(self, topic: str, time_series_evidence: str) -> str:
-        prompt = PromptTemplate.from_template(
-            "Sen bir Tahminleme ve Büyüme Stratejistisin.\n"
-            "Konu / Hedef: {topic}\n\n"
-            "Dönemsel Zaman Serisi Verileri:\n{evidence}\n\n"
-            "GÖREVİN:\n"
-            "1. Geçmiş trendlerin yönünü açıkla.\n"
-            "2. Bu yalnızca nitel senaryodur; sayısal tahmin veya güven aralığı uydurma.\n"
-            "3. Olası riski bertaraf etmek için 2 maddelik proaktif strateji öner."
-        )
+        prompt = PromptTemplate.from_template(PREDICTIVE_INSIGHT_PROMPT)
         chain = prompt | self.guarded_llm
         return chain.invoke({
             "topic": topic,
             "evidence": time_series_evidence
         }).content.strip()
-    
-# --- HİBRİT VE KADEMELİ MOTOR ---
+
+
+# --- 3. VERİTABANI BAĞLANTISI VE YEDEKLEME (CLICKHOUSE -> SQLITE FALLBACK) ---
+
+def get_database_connection(custom_uri=None):
+    """Configured ClickHouse never silently turns into an unrelated SQLite dataset."""
+    from sqlalchemy.engine import make_url
+    import clickhouse_connect
+    local_path = Path(__file__).resolve().parent / "insight_generation_bot.db"
+    if custom_uri and "clickhouse" not in custom_uri.lower():
+        name = make_url(custom_uri).database
+        if not name:
+            raise ValueError("SQLite dosyası bulunamadı.")
+        db = SQLiteBackend(path=name.removeprefix("file:").split("?",1)[0])
+        return db, custom_uri, "sqlite"
+    host = get_secret("CLICKHOUSE_HOST")
+    if custom_uri or host:
+        if custom_uri:
+            url = make_url(custom_uri)
+            host = url.host
+            port = url.port or 8123
+            username = url.username or "default"
+            password = url.password or ""
+            database = url.database or "default"
+            secure = str(url.query.get("secure", port in (443,8443))).lower() in {"true","1","yes"}
+            verify = str(url.query.get("verify", "true")).lower() not in {"false","0","no"}
+        else:
+            secure = enabled("CLICKHOUSE_SECURE", get_secret("CLICKHOUSE_PORT") in {"443", "8443"})
+            port = int(get_secret("CLICKHOUSE_PORT", "8443" if secure else "8123"))
+            username = get_secret("CLICKHOUSE_USERNAME", "default")
+            password = get_secret("CLICKHOUSE_PASSWORD")
+            database = get_secret("CLICKHOUSE_DB", "default")
+            verify = not get_secret("CLICKHOUSE_VERIFY", "true").lower() in {"false","0","no"}
+        options = {"host": host, "port":port, "username":username, "password":password,
+                   "database":database, "secure":secure, "verify":verify, "connect_timeout":5, "send_receive_timeout":15}
+        ca_cert = get_secret("CLICKHOUSE_CA_CERT")
+        if ca_cert:
+            options["ca_cert"] = ca_cert
+        try:
+            backend = ClickHouseBackend(clickhouse_connect.get_client(**options), database)
+            backend.tls_verification_disabled = secure and not verify
+            backend.catalog()
+            return backend, "clickhousedb://configured", "clickhouse"
+        except Exception as exc:
+            logger.warning("clickhouse_connection_failed", extra={"error_type":type(exc).__name__})
+            if not enabled("ALLOW_SQLITE_FALLBACK"):
+                raise ValueError("ClickHouse bağlantısı kurulamadı. Yapılandırma, ağ erişimi ve salt okunur hesap izinlerini kontrol edin; SQLite'a otomatik geçilmedi.") from None
+            backend = SQLiteBackend(path=local_path, fallback=True)
+            return backend, f"sqlite:///{local_path}", "sqlite"
+    backend = SQLiteBackend(path=local_path)
+    return backend, f"sqlite:///{local_path}", "sqlite"
+
+
+# --- 4. HİBRİT VE KADEMELİ MOTOR (2-TIER ROUTING) ---
+
 def get_hybrid_agent(
-    db_uri: str = "sqlite:///insight_generation_bot.db",
+    db_uri: Optional[str] = None,
     fast_model: str = "gpt-4o-mini",
     reasoning_model: str = "gpt-4o"
 ):
     configure_openai_credentials()
-    db = QueryAgent(db_uri=db_uri).db
-    
-    # 1. Kademe: SQL ve sorgu planlayıcı model
-    
-    # 2. Kademe: Stratejik sentez ve hipotez doğrulama modeli
+    db, active_uri, dialect = get_database_connection(custom_uri=db_uri)
     llm_reasoning = ChatOpenAI(model=reasoning_model, temperature=0, timeout=30, max_retries=1)
-    
-    # Retrieval is lazy and goes through AnalysisService, not an unrestricted SQL executor.
     from agents.analysis_service import DocumentSearch
-    agent_executor = DocumentSearch()
-
-    query_agent = QueryAgent(db_uri=db_uri, model_name=fast_model)
+    documents = DocumentSearch()
+    query_agent = QueryAgent(db_uri=active_uri, model_name=fast_model, dialect=dialect, db=db)
     rewrite_agent = RewriteNLAgent(model_name=fast_model)
     synthesis_engine = SynthesisEngine(llm_reasoning)
-    
-    # 6 elemanı tam olarak döndürür
-    return db, llm_reasoning, agent_executor, query_agent, rewrite_agent, synthesis_engine
+    return db, llm_reasoning, documents, query_agent, rewrite_agent, synthesis_engine

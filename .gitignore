@@ -1,4 +1,6 @@
-﻿.streamlit/
+.streamlit/*
+!.streamlit/secrets.toml.example
 __pycache__/
 *.pyc
-logs/
+logs/*
+!logs/.gitkeep

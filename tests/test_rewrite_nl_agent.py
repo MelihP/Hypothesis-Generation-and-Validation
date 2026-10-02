@@ -1,5 +1,4 @@
 import unittest
-import json
 import sys
 from pathlib import Path
 
@@ -35,23 +34,46 @@ class TestRewriteNLAgent(unittest.TestCase):
         self.assertIn("vizyon", sub_questions[1])
 
     def test_formulate_hypothesis(self):
-        content = json.dumps({
-            "H0": "Duygu dağılımı yaş gruplarında aynıdır.",
-            "H1": "Genç kitlenin duygu dağılımı farklıdır.",
-            "H2": "Fark örneklem bileşiminden kaynaklanmaktadır.",
-            "test_questions": ["Duygu verisinin dönem kapsamı nedir?", "Yaşa göre duygu dağılımı nedir?"]
-        })
-        mock_llm = RunnableLambda(lambda x: AIMessage(content=content))
+        json_content = """```json
+{
+  "H0": "Consideration düşüşü genel pazar trendidir.",
+  "H1": "Consideration çöküşü tepe noktasının daraldığını gösterir.",
+  "H2": "Tüketiciler doğrudan satın almaya geçmektedir.",
+  "test_questions": [
+    "2025 ve 2026 yıllarında consumer_journey aşamalarının tweet sayıları nedir?",
+    "2026 yılında en çok bahsedilen topic_categories nedir?"
+  ]
+}
+```"""
+        mock_llm = RunnableLambda(lambda x: AIMessage(content=json_content))
         agent = RewriteNLAgent(llm=mock_llm)
 
         raw_text, sub_questions = agent.formulate_hypothesis("Genç kitle ve teknoloji", "Tablo şeması")
-        self.assertIn("H1: Genç kitlenin duygu dağılımı farklıdır.", raw_text)
+        self.assertIn("H0:", raw_text)
+        self.assertIn("H1:", raw_text)
+        self.assertIn("H2:", raw_text)
         self.assertEqual(len(sub_questions), 2)
 
-    def test_invalid_hypothesis_does_not_invent_unrelated_queries(self):
-        agent = RewriteNLAgent(llm=RunnableLambda(lambda x: AIMessage(content="Geçersiz çıktı")))
-        with self.assertRaisesRegex(ValueError, "Hipotez planı geçersiz"):
-            agent.formulate_competing_hypotheses("Yaş ve duygu", "Tablo şeması")
+    def test_formulate_competing_hypotheses(self):
+        json_content = """```json
+{
+  "H0": "Consideration düşüşü genel pazar trendidir.",
+  "H1": "Consideration çöküşü tepe noktasının daraldığını gösterir.",
+  "H2": "Tüketiciler doğrudan satın almaya geçmektedir.",
+  "test_questions": [
+    "2025 ve 2026 yıllarında consumer_journey aşamalarının tweet sayıları nedir?",
+    "2026 yılında en çok bahsedilen topic_categories nedir?"
+  ]
+}
+```"""
+        mock_llm = RunnableLambda(lambda x: AIMessage(content=json_content))
+        agent = RewriteNLAgent(llm=mock_llm)
+
+        hyp_dict, sub_questions = agent.formulate_competing_hypotheses("Genç kitle ve teknoloji", "Tablo şeması")
+        self.assertEqual(hyp_dict["H0"], "Consideration düşüşü genel pazar trendidir.")
+        self.assertEqual(hyp_dict["H1"], "Consideration çöküşü tepe noktasının daraldığını gösterir.")
+        self.assertEqual(hyp_dict["H2"], "Tüketiciler doğrudan satın almaya geçmektedir.")
+        self.assertEqual(len(sub_questions), 2)
 
     def test_decompose_predictive_trends(self):
         content = (

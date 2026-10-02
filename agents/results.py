@@ -12,8 +12,8 @@ def build_result(question, plan, sql, parameters, columns, rows, truncated=False
     for i, name in enumerate(columns):
         values = [row[i] for row in rows if row[i] is not None]
         agg = aggregates.get(name)
-        dtype = "number" if agg or values and all(isinstance(v, (int, float)) for v in values) else "text"
-        role = "metric" if agg or name in {"volume", "demographic_percentage"} else "dimension"
+        dtype = "array" if agg and agg["op"] == "group_array" or values and isinstance(values[0], (list, tuple)) else "number" if agg or values and all(isinstance(v, (int, float)) for v in values) else "text"
+        role = "metric" if (agg and agg["op"] != "group_array") or name in {"volume", "demographic_percentage"} else "dimension"
         if not agg and (name.endswith("_id") or name in {"user_id", "tweet_id", "author_id"}):
             role = "identifier"
         if name == "prediction_month":
@@ -30,6 +30,8 @@ def build_result(question, plan, sql, parameters, columns, rows, truncated=False
         warnings.append("Sonuç satır sınırı nedeniyle kesildi; tablo tam dağılımı temsil etmeyebilir.")
     if plan.get("table") == "trending_topics" or any(j.get("table") == "trending_topics" for j in plan.get("joins", [])):
         warnings.append("Bir tweet birden fazla konu taşır. Konu hacimleri farklı tweet veya kullanıcı toplamı değildir; grup payları örtüşebilir.")
+    if plan.get("array_joins") or plan.get("array_join"):
+        warnings.append("ARRAY JOIN dizi etiketlerini açar; aynı tweet/kişi birden fazla grupta görünebilir. Payları nüfus oranı olarak yorumlamayın.")
     if plan.get("joins"):
         warnings.append("JOIN sonrası satır sayısı analiz birimi sayısı değildir; farklı tweet/kullanıcı metriklerini kontrol edin.")
     return {"question": question, "json_query": plan, "sql": sql, "parameters": parameters,
@@ -67,11 +69,20 @@ def export_csv(frame):
     return safe.to_csv(index=False).encode("utf-8-sig")
 
 
+def excel_value(value):
+    if getattr(value, "tzinfo", None) is not None:
+        return value.isoformat()
+    if isinstance(value, (list, tuple, dict)):
+        return json.dumps(value, ensure_ascii=False, default=str)
+    return value
+
+
 def export_excel(frame):
     safe = frame.copy()
     safe.columns = ["'"+str(col) if str(col).lstrip().startswith(("=", "+", "-", "@")) else col for col in safe.columns]
     for name in safe.columns:
         safe[name] = safe[name].map(lambda v: "'" + v if isinstance(v, str) and v.lstrip().startswith(("=", "+", "-", "@")) else v)
+    safe = safe.map(excel_value)
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         safe.to_excel(writer, index=False, sheet_name="Veri")

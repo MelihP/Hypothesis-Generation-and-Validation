@@ -44,13 +44,26 @@ def setup_logging():
     Uygulama loglama altyapısını başlatır.
     Konsol, RotatingFileHandler ve opsiyonel Graylog (GELF) desteği sunar.
     """
-    environment_name = os.getenv("ENVIRONMENT", "development")
-    log_level_name = os.getenv("LOG_LEVEL", "INFO").upper()
+    # 1. Ortam Değişkenleri & Streamlit Secrets Desteği
+    secrets_dict = {}
+    try:
+        import streamlit as st
+        if hasattr(st, "secrets"):
+            secrets_dict = dict(st.secrets)
+    except Exception:
+        secrets_dict = {}
+
+    def get_config(key: str, default: str = "") -> str:
+        return os.getenv(key, str(secrets_dict.get(key, default)))
+
+    environment_name = get_config("ENVIRONMENT", "development")
+    log_level_name = get_config("LOG_LEVEL", "INFO").upper()
     log_level = getattr(logging, log_level_name, logging.INFO)
     
-    graylog_enabled = os.getenv("GRAYLOG_ENABLED", "false").lower() in ("true", "1", "yes")
-    graylog_host = os.getenv("GRAYLOG_HOST", "localhost")
-    graylog_port = int(os.getenv("GRAYLOG_PORT", "12201"))
+    graylog_enabled = get_config("GRAYLOG_ENABLED", "false").lower() in ("true", "1", "yes")
+    graylog_host = get_config("GRAYLOG_HOST", "localhost")
+    graylog_port = int(get_config("GRAYLOG_PORT", "12201"))
+    graylog_protocol = get_config("GRAYLOG_PROTOCOL", "udp").lower()
 
     # Log dizini (Modülün bulunduğu klasör altında logs/)
     log_dir = Path(__file__).resolve().parent / "logs"
@@ -81,18 +94,25 @@ def setup_logging():
         app_logger.addHandler(file_handler)
         app_logger.addHandler(console_handler)
 
-        # 3. Graylog (GELF UDP) Genişletilebilirliği
+        # 3. Graylog (GELF UDP / TCP / HTTP) Desteği
         if graylog_enabled:
             try:
                 import graypy
-                import socket
-                socket.getaddrinfo(graylog_host, graylog_port)
                 
-                gelf_handler = graypy.GELFUDPHandler(graylog_host, graylog_port)
+                if graylog_protocol == "tcp":
+                    gelf_handler = graypy.GELFTCPHandler(graylog_host, graylog_port)
+                elif graylog_protocol in ("http", "https"):
+                    gelf_handler = graypy.GELFHTTPHandler(graylog_host, graylog_port)
+                else:
+                    gelf_handler = graypy.GELFUDPHandler(graylog_host, graylog_port)
+
                 gelf_handler.facility = logger_name
                 gelf_handler.setLevel(log_level)
                 app_logger.addHandler(gelf_handler)
-                app_logger.info("Graylog GELF handler successfully registered.", extra={"graylog_host": graylog_host, "graylog_port": graylog_port})
+                app_logger.info(
+                    "Graylog handler successfully registered.",
+                    extra={"graylog_host": graylog_host, "graylog_port": graylog_port, "protocol": graylog_protocol}
+                )
             except Exception as e:
                 app_logger.warning(f"Graylog handler could not be initialized: {e}")
 
@@ -122,3 +142,19 @@ def log_query(question: str, json_query: dict, sql: str, result: any = None, dur
         logger.error(f"Query Failed: {question}", extra=extra_payload)
     else:
         logger.info(f"Query Executed: {question}", extra=extra_payload)
+
+
+def log_db_fallback(target_db: str, fallback_db: str = "sqlite:///insight_generation_bot.db", reason: str = None):
+    """
+    Hedef veritabanına (ClickHouse vb.) bağlanılamadığında SQLite yedeğine geçişi yapılandırılmış biçimde loglar.
+    """
+    extra_payload = {
+        "event_type": "database_fallback",
+        "target_db": target_db,
+        "fallback_db": fallback_db,
+        "reason": str(reason) if reason else None
+    }
+    logger.warning(
+        f"Database fallback triggered: {target_db} is unavailable. Using {fallback_db} instead.",
+        extra=extra_payload
+    )

@@ -8,8 +8,6 @@ from langchain_openai import OpenAIEmbeddings
 from langchain_pinecone import PineconeVectorStore
 
 from agents.results import evidence_text, require_evidence
-from agents.sql_safety import database_path, read_query
-from agents.query_agent import quote_ident
 
 logger = logging.getLogger(__name__)
 
@@ -26,11 +24,14 @@ class DocumentSearch:
 
     def search(self, question):
         if self.retriever is None:
-            if not os.environ.get("PINECONE_API_KEY"):
+            from agents.config import get_secret
+            key = get_secret("PINECONE_API_KEY")
+            if not key:
                 raise ValueError("Belge araması için PINECONE_API_KEY gerekli; SQL analizi kullanılabilir.")
-            vectorstore = PineconeVectorStore(index_name=os.getenv("PINECONE_INDEX", "pazarlama-verileri"),
+            os.environ["PINECONE_API_KEY"] = key
+            vectorstore = PineconeVectorStore(index_name=get_secret("PINECONE_INDEX_NAME", get_secret("PINECONE_INDEX", "pazarlama-verileri")),
                          embedding=OpenAIEmbeddings(model="text-embedding-3-small", request_timeout=30, max_retries=1),
-                         namespace=os.getenv("PINECONE_NAMESPACE", ""))
+                         namespace=get_secret("PINECONE_NAMESPACE", ""))
             self.retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
         documents = self.retriever.invoke(question)
         rows = []
@@ -48,19 +49,7 @@ class DocumentSearch:
 
 
 def dataset_catalog(query_agent):
-    from sqlalchemy import inspect
-    inspector = inspect(query_agent.db._engine)
-    path = database_path(query_agent.db)
-    catalog = {}
-    for table in query_agent.db.get_usable_table_names():
-        columns = [col["name"] for col in inspector.get_columns(table)]
-        _, rows, _ = read_query(path, f"SELECT count(*) FROM {quote_ident(table)}", allowed_tables={table})
-        periods = []
-        if "prediction_month" in columns:
-            _, data, _ = read_query(path, f"SELECT DISTINCT prediction_month FROM {quote_ident(table)} WHERE prediction_month IS NOT NULL ORDER BY prediction_month", allowed_tables={table})
-            periods = [row[0] for row in data]
-        catalog[table] = {"columns": columns, "row_count": rows[0][0], "periods": periods}
-    return catalog
+    return query_agent.catalog()
 
 
 class AnalysisService:
@@ -80,7 +69,7 @@ class AnalysisService:
             if route not in {"sql", "documents", "hybrid"}:
                 raise ValueError("Analiz kaynağı geçersiz.")
             if mode == "predictive":
-                periods = sorted({p for info in dataset_catalog(self.query).values() for p in info["periods"]})
+                periods = sorted({p for table in dataset_catalog(self.query) for p in self.query.periods(table)})
                 if len(periods) < 2:
                     raise ValueError("Trend analizi için en az iki veri dönemi gerekli. Mevcut tek dönemden gelecek tahmini üretilmedi.")
             if route in {"sql", "hybrid"}:

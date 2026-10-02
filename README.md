@@ -1,86 +1,72 @@
-# Pazarlama Veri ve İçgörü Motoru
+# AI-Powered Hybrid Marketing Insight Engine
 
-Streamlit, SQLite, LangChain ve OpenAI ile beş analiz akışı:
+ClickHouse ve SQLite verilerini, gerektiğinde Pinecone dokümanlarıyla birleştiren Streamlit analiz uygulaması.
 
-- **Otonom içgörü:** Mevcut şemaya uygun araştırma sorusu ve kanıtlı özet.
-- **Manuel soru:** SQL, belge veya hibrit yönlendirme; yapılandırılmış filtre hafızası ve netleştirme.
-- **Hipotez değerlendirme:** H0/H1/H2 için betimsel kanıt tablosu. İstatistiksel test olmayan bir rapor kesin doğrulama veya destek yüzdesi üretmez.
-- **Trend senaryosu:** Birden fazla veri dönemi gerektirir. Sayısal tahmin modeli değildir.
-- **Veri Sorgulama ve İstatistik:** Anahtarsız tablo oluşturucu, doğal dil sorgusu, çapraz tablolar, sayım/paylar, CSV/Excel indirme, tam tablo NULL analizi ve hesaplanmış demografik ilişki testleri.
+## Çalışma modları
+
+- **Otonom İçgörü:** Canlı şemaya göre sorular üretir; SQL, doküman veya hibrit arama kullanır.
+- **Manuel Soru:** Belirsiz soruları netleştirir ve sınırlı konuşma geçmişiyle takip sorularını çözer.
+- **Yarışan Hipotezler:** Kanıtları karşılaştırır. Eksik, başarısız veya kesilmiş sorgulardan nihai karar üretmez; istatistiksel test yapılmadan hipotezi kanıtlanmış saymaz.
+- **Tahminleme:** Dönem kapsamını kontrol eder. Tek dönemden gelecek trendi üretmez; çıktı keşifseldir.
+- **📊 Veri Sorgulama ve İstatistik:** Doğal dilde veya alan seçerek tablo, sayım, farklı kullanıcı/tweet sayısı, çapraz tablo, grafik ve CSV/Excel indirme. Tam tablo üzerinde NULL analizi; bağımsız birimler için ki-kare/Fisher, Cramér V, oranlar ve %95 güven aralıkları.
+
+Model profilleri **Hibrit**, **Tasarruf**, **Hassas** ve **Özel** üzerinden seçilir. SQL ve tablo oluşturma için Pinecone gerekli değildir. Doküman araması yalnızca gerektiğinde başlatılır; kaynaklar `[D1]` biçiminde doğrulanır. Sonuç tabloları filtreleri, analiz birimini, kesilme durumunu ve sorgu hatalarını gösterir.
 
 ## Kurulum
 
-Python 3.12 ile:
+Python 3.12 ile doğrulanmıştır:
 
 ```bash
-python3 -m venv .venv
+python -m venv .venv
 source .venv/bin/activate
-python -m pip install -r requirements.txt -c requirements.lock
-python -m pip check
-python -m streamlit run app.py --server.headless=true --browser.gatherUsageStats=false
+pip install -r requirements.lock
+streamlit run app.py
 ```
 
-Bulut ortamında `/workspace/hypothesis-venv` kullanılabilir. Her görev zaten izoledir; açıkça istenmedikçe yeni Git worktree oluşturmayın.
+`requirements.txt` doğrudan bağımlılıkları, `requirements.lock` doğrulanmış sürümleri içerir. Streamlit Community Cloud giriş dosyası **app.py** olarak kalır; mevcut ortamınızın Python sürümünü 3.12 seçin.
 
-Doğal dil ve yorumlama için güvenli ortam ayarlarında `OPENAI_API_KEY` veya `LLM_API_KEY` bağlayın; `LLM_API_KEY` uygulama içinde desteklenir. Streamlit secrets da kullanılabilir. Anahtarları kaynak koduna, loglara veya Git'e eklemeyin. Tablo oluşturma, veri kalite ve istatistik araçları OpenAI gerektirmez.
+`.streamlit/secrets.toml.example` dosyasını temel alın. Gerçek anahtarları Git'e eklemeyin. Streamlit Cloud uygulamasının **Settings → Secrets** bölümünde mevcut adlar korunur:
 
-## Belge araması
+```toml
+OPENAI_API_KEY = "your-key"
+CLICKHOUSE_HOST = "your-clickhouse-host"
+CLICKHOUSE_PORT = "8443"
+CLICKHOUSE_USERNAME = "read-only-user"
+CLICKHOUSE_PASSWORD = "your-password"
+CLICKHOUSE_DB = "your-database"
+CLICKHOUSE_SECURE = "true"
+CLICKHOUSE_VERIFY = "true"
+ALLOW_SQLITE_FALLBACK = "false"
+```
 
-`PINECONE_API_KEY` olmadan SQL araçları çalışır; belge soruları açıklayıcı hata verir. Pinecone bağlantısı yalnızca belge/hibrit analiz gerektiğinde açılır.
+`LLM_API_KEY`, `OPENAI_API_KEY` yerine de kullanılabilir. Pinecone modu için `PINECONE_API_KEY`, `PINECONE_INDEX_NAME` ve isteğe bağlı `PINECONE_NAMESPACE` kullanılır. Özel TLS sertifikaları için `CLICKHOUSE_CA_CERT` ayarlanabilir. Mevcut `CLICKHOUSE_VERIFY=false` yapılandırması korunur ve arayüzde uyarılır; üretimde doğrulamanın açık olması önerilir. Port 443/8443 varsayılan olarak TLS kullanır.
 
-- `PINECONE_INDEX`: Varsayılan `pazarlama-verileri`.
-- `PINECONE_NAMESPACE`: Varsayılan boş namespace; kuruma ait belge alanını belirtmek için kullanılabilir.
-- Embedding modeli: `text-embedding-3-small`; indeks boyutu varsayılan embedding boyutuyla uyumlu olmalıdır.
-- Belgeler indekslenmiş olmalıdır; bu uygulama PDF yükleme/indeks oluşturma hattı içermez.
-- İndeks metadata'sında `source`/`file_name`, `page`/`section` ve `date` alanları önerilir. Eksik kaynak alanları uydurulmaz.
-- Kısıtlı ağda `api.openai.com`, `api.pinecone.io` ve Pinecone indeksinizin gerçek HTTPS hostname'i erişilebilir olmalıdır. Proxy üzerinden anahtar kullanılıyorsa anahtar hedefleri de ilgili Pinecone hostname'lerini içermelidir.
+ClickHouse bağlantısı tanımlı değilse yerel `SQLITE_DB_PATH` (varsayılan `insight_generation_bot.db`) kullanılır. Tanımlı ClickHouse bağlantısı başarısızsa uygulama hata gösterir; **sessizce başka veri kümesine geçmez**. SQLite yedeklemesi yalnızca `ALLOW_SQLITE_FALLBACK=true` ile açılır ve arayüzde açıkça belirtilir. Etkin veri kaynağı her zaman görünür.
 
-Belge parçaları kanıt olarak kullanılır; yorumda `[D1]` biçiminde geçerli kaynak atfı gerekir. Kaynak tablosu dosya, sayfa/bölüm ve tarih bilgisini gösterir. Namespace ayarı tek başına çok kullanıcılı yetkilendirme sağlamaz; üretim yayımı için kullanıcı/kurum erişim katmanı ayrıca gerekir.
+## ClickHouse ve istatistik kapsamı
 
-## Veri sözlüğü ve analiz sınırları
+Canlı kolonlar `tweet_predictions`, `tweets`, `users`, `user_factors` tablolarından okunur. Var olmayan kolon/ilişkiler uydurulmaz. `Array(String)`, `has/hasAny/hasAll`, `groupArray` ve JOIN sonrası `ARRAY JOIN` desteklenir. Dizi gruplamasında **Dizi etiketlerini ayrı satırlara aç** seçeneği kullanılır; aynı birimin birden fazla grupta görünebileceği uyarılır. Tarih alanları aylık kapsam seçimine çevrilir.
 
-| Tablo | Analiz birimi / ilişkisi |
-|---|---|
-| `demographics` | Kullanıcı; anahtar `user_id`, `age_group`, `gender` |
-| `consumer_journey` | Tweet yolculuk etiketi; `author_id = demographics.user_id` |
-| `emotion_analysis` | Tweet duygu etiketi; aynı kullanıcı ilişkisi |
-| `trending_topics` | Bir tweet birden fazla konu kaydı taşıyabilir |
-| `emotions_by_age_groups` | Önceden hesaplanmış yaş/duygu hacimleri ve oranları |
+İstatistiksel karşılaştırmada bağımsız analiz anahtarı, etiket, grup tablosu ve eşleşme anahtarı seçilir. Aynı birime ait çoklu kayıtlar, çoklu etiketler, çoklu JOIN eşleşmeleri ve eksik değerler dışlanır; dışlanan birim sayısı gösterilir. Seyrek 2×2 tabloda Fisher testi uygulanır; daha büyük seyrek tablolarda güvenilir test sonucu üretilmez. Güven aralıkları çoklu karşılaştırma düzeltmesi içermez; sonuç nedensellik kanıtı değildir.
 
-Konu-yolculuk/duygu JOIN'lerinde `tweet_id` ve `prediction_month` birlikte eşleştirilir. Kayıt, farklı tweet ve farklı kullanıcı sayıları ayrı metriklerdir. `prediction_month` YYYYMM etiketidir; olay tarihi olduğu varsayılmaz. Mevcut depoda tarih içeren tablolarda yalnızca **202607** vardır. Olmayan dönem, ölçülmüş sıfır veya huni daralması değildir.
+Sorgular yalnızca okuma içindir. Parametreler driver üzerinden bağlanır; tablo/kolonlar şemaya göre doğrulanır. Sonuç sınırı en fazla 1.000 satırdır. ClickHouse sorguları 5 saniye, 256 MiB bellek ve 10 milyon okunan satırla sınırlandırılır; büyük sorgular kapsam daraltılmasını gerektirebilir. Üretimde ayrıca yalnızca gerekli tablolara SELECT yetkili kullanıcı kullanın. CSV/Excel çıktıları formül enjeksiyonuna karşı korunur.
 
-Görünen tablo paylarının paydası gösterilen grup hacimlerinin toplamıdır. Bunlar özellikle top-N, kesilmiş veya çok etiketli sonuçlarda nüfus oranı değildir. İstatistik özetleri gösterilen sonuç satırlarına aittir; gruplanmış hacimlerin ortalaması ham gözlem ortalaması değildir. Kullanıcı/tweet ID'leri ve dönem etiketlerinin ortalama/standart sapması hesaplanmaz.
-
-### Hesaplanan istatistikler
-
-Demografik karşılaştırma, seçili dönemde tek kaydı olan kullanıcılardan bir frekans tablosu oluşturur. Tekil demografik anahtar kontrolü yapılır; tekrarlı, eşleşmeyen veya eksik etiketli kullanıcılar dışlanır ve kapsam raporlanır.
-
-- Uygun hücre hacminde ki-kare bağımsızlık testi.
-- Seyrek 2×2 tabloda Fisher exact testi; daha büyük seyrek tabloda yetersiz kanıt.
-- Bias düzeltmeli Cramér V etki büyüklüğü.
-- Grup içi oranlar ve bireysel %95 Wilson güven aralıkları.
-- 2×2 tabloda oran farkı ve Newcombe-Wilson %95 aralığı.
-
-p-değeri hipotezin doğru olma olasılığı değildir. Testler keşifseldir; farklı analizlerdeki tekrarlar için otomatik çoklu test düzeltmesi veya temsilî örneklem garantisi yoktur. Sosyal medya ve tahmini demografik etiketlerden nedensellik veya satış dönüşümü çıkarılmaz.
-
-## Güvenli yürütme ve kanıt kontrolü
-
-SQLite dosyası salt okunur açılır. Değerler parametreyle bağlanır; tablo/sütunlar canlı şemada doğrulanır. Ham JOIN/SQL koşulları kabul edilmez. Yazma, ATTACH ve PRAGMA işlemleri yürütücüde reddedilir. Varsayılan 200, üst sınır 1.000 sonuç satırıdır; fazladan bir satır kontrolüyle kesilme görünür yapılır. En fazla 3 JOIN ve sınırlı alt sorgu derinliği vardır. Yürütme 5 saniye/20 milyon VM adımıyla sınırlıdır.
-
-Boş, başarısız veya kesilmiş sonuçlar nihai yorum kanıtı sayılmaz. Kısmi yönetici özeti yalnızca başarılı kanıtlara dayanır ve açıkça etiketlenir. Hipotez/trend değerlendirmesi gerekli adımların tümü başarılı değilse üretilmez. Excel/CSV çıktılarında metin formülleri kaçışlanır.
-
-## Doğrulama
+## Testler
 
 ```bash
 python -m unittest discover -s tests -v
 ```
 
-CI anahtarsız çalışır: derleyici, salt okunur yürütme, timeout, kanıt kapıları, kaynak yönlendirme/atıf, istatistik formülleri, indirmeler, sohbet netleştirmesi ve beş modun Streamlit akışları test edilir. RAG testleri örnek retriever kullanır; gerçek Pinecone erişimi anlamına gelmez.
-
-OpenAI anahtarı bağlıyken, ücretli API çağrıları yapan isteğe bağlı kontrol:
+Bu testler gerçek OpenAI/Pinecone anahtarı gerektirmez. ClickHouse entegrasyon testleri yalnızca `127.0.0.1:18123` üzerindeki test sunucusuna bağlanır ve **hypothesis_fixture** veritabanını oluşturup siler. Üretim sunucusuna yönlendirmeyin.
 
 ```bash
-python scripts/smoke_openai.py
+docker run -d --name hypothesis-clickhouse-test --cpus=2 --memory=2g \
+  -p 127.0.0.1:18123:8123 \
+  -e CLICKHOUSE_USER=hypothesis_test -e CLICKHOUSE_PASSWORD=local-test-only \
+  clickhouse/clickhouse-server:25.8-alpine
+# Sunucu hazır olduktan sonra:
+LOCAL_CLICKHOUSE_TEST=1 python -m unittest discover -s tests -v
+docker rm -f hypothesis-clickhouse-test
 ```
 
-Bu kontrol gerçek model planını doğrudan SQL toplamıyla karşılaştırır; otomatik SQL yönlendirmesini, kanıtlı özeti ve dönem bilgisinin takip sorusunda korunmasını sınar. Canlı model davranışı değişebileceği için CI'ye dahil değildir.
+GitHub Actions aynı testleri ayrı bir ClickHouse servisiyle çalıştırır. Canlı Streamlit güncellemesi için bu değişikliklerin uygulamanın izlediği dala (bu depoda `work`) birleştirilmesi ve uygulamanın yeniden başlatılması gerekir.

@@ -14,16 +14,24 @@ MAX_JOINS = 3
 def validate_plan(plan, depth=0):
     if depth > MAX_DEPTH or not isinstance(plan, dict):
         raise ValueError("Sorgu derinliği veya plan türü geçersiz.")
-    allowed = {"table", "alias", "columns", "aggregates", "group_by", "filters", "order_by", "joins", "limit"}
+    allowed = {"table", "alias", "columns", "aggregates", "group_by", "filters", "order_by", "joins", "limit", "array_joins", "array_join"}
     if set(plan) - allowed:
         raise ValueError(f"Desteklenmeyen plan alanı: {sorted(set(plan) - allowed)}")
     if not isinstance(plan.get("table"), str) or not plan["table"]:
         raise ValueError("JSON sorgusunda zorunlu 'table' alanı eksik!")
-    for field in ("columns", "aggregates", "group_by", "filters", "order_by", "joins"):
+    for field in ("columns", "aggregates", "group_by", "filters", "order_by", "joins", "array_joins"):
         if field in plan and not isinstance(plan[field], list):
             raise ValueError(f"{field} liste olmalıdır.")
         if len(plan.get(field, [])) > 100:
             raise ValueError("Plan çok fazla alan içeriyor.")
+    arrays = plan.get("array_joins", plan.get("array_join", []))
+    if isinstance(arrays, str):
+        arrays = [arrays]
+    if not isinstance(arrays, list) or len(arrays)>2:
+        raise ValueError("En fazla iki ARRAY JOIN desteklenir.")
+    for entry in arrays:
+        if not isinstance(entry, str) and (not isinstance(entry, dict) or set(entry)-{"column", "as"} or not entry.get("column")):
+            raise ValueError("ARRAY JOIN yalnızca sütun ve alias alabilir.")
     limit = plan.get("limit")
     if limit is not None and (type(limit) is not int or not 1 <= limit <= MAX_ROWS):
         raise ValueError(f"Satır sınırı 1–{MAX_ROWS} arasında tam sayı olmalıdır.")
@@ -44,7 +52,7 @@ def validate_plan(plan, depth=0):
     for agg in plan.get("aggregates", []):
         if not isinstance(agg, dict) or set(agg) - {"op", "column", "as"}:
             raise ValueError("Toplama tanımı geçersiz.")
-        if agg.get("op") not in {"count", "count_distinct", "sum", "avg", "min", "max"}:
+        if agg.get("op") not in {"count", "count_distinct", "sum", "avg", "min", "max", "group_array"}:
             raise ValueError("Desteklenmeyen toplama operatörü.")
     for order in plan.get("order_by", []):
         if not isinstance(order, dict) or set(order) - {"column", "dir"} or order.get("dir", "asc").lower() not in {"asc", "desc"}:
@@ -53,7 +61,7 @@ def validate_plan(plan, depth=0):
         if not isinstance(filt, dict) or set(filt) - {"column", "op", "value"} or not filt.get("column"):
             raise ValueError("Filtre tanımı geçersiz.")
         op = filt.get("op", "").upper()
-        if op not in {"EQ", "NEQ", "GT", "GTE", "LT", "LTE", "LIKE", "ILIKE", "IN", "NOT_IN", "BETWEEN", "IS_NULL", "IS_NOT_NULL"}:
+        if op not in {"EQ", "NEQ", "GT", "GTE", "LT", "LTE", "LIKE", "ILIKE", "IN", "NOT_IN", "BETWEEN", "IS_NULL", "IS_NOT_NULL", "HAS", "HAS_ANY", "HAS_ALL"}:
             raise ValueError("Desteklenmeyen filtre operatörü.")
         value = filt.get("value")
         if isinstance(value, float) and not math.isfinite(value):
@@ -71,6 +79,10 @@ def validate_plan(plan, depth=0):
                     raise ValueError("IN alt sorgusu tek sütun döndürmelidir.")
             elif not isinstance(value, list) or len(value) > 100:
                 raise ValueError("IN değerleri en fazla 100 elemanlı liste olmalıdır.")
+        elif op in {"HAS", "HAS_ANY", "HAS_ALL"}:
+            values = value if isinstance(value, list) else [value]
+            if len(values) > 100 or any(isinstance(v, (list, dict)) for v in values):
+                raise ValueError("Dizi filtresi en fazla 100 skaler değer alabilir.")
         elif isinstance(value, (dict, list)) and op != "BETWEEN":
             raise ValueError("Filtre değeri skaler olmalıdır.")
 

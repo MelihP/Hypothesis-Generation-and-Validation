@@ -81,6 +81,7 @@ class TestAnalysisService(unittest.TestCase):
         self.assertEqual(answer["insight"], "")
 
     def test_single_period_blocks_predictive_synthesis(self):
+        self.query.periods.return_value = [202607]
         with patch("agents.analysis_service.dataset_catalog", return_value={"consumer_journey": {"periods": [202607]}}):
             answer = self.service.analyze("Trend", mode="predictive", source="sql")
         self.assertEqual(answer["status"], "failed")

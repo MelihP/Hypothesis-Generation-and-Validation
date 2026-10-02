@@ -1,10 +1,14 @@
 streamlit
-pandas
-plotly
 langchain
-langchain-community
 langchain-core
 langchain-openai
 langchain-pinecone
+langchain-community
+plotly
+pandas
+tiktoken
+sqlalchemy
+clickhouse-connect
+graypy
 scipy>=1.14,<2
 openpyxl>=3.1,<4

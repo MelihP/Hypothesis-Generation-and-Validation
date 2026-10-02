@@ -7,10 +7,10 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-from agent import get_hybrid_agent
+from agent import get_hybrid_agent, get_database_connection
 from agents.analysis_service import AnalysisService, dataset_catalog, public_error
 from agents.credentials import configure_openai_credentials
-from agents.explorer import quality_report, table_plan, independent_user_comparison
+from agents.explorer import quality_report, table_plan, independent_comparison, period_filters
 from agents.query_agent import QueryAgent
 from agents.results import dataframe, export_csv, export_excel
 from agents.statistics import descriptive_statistics, missing_statistics
@@ -26,19 +26,38 @@ st.caption("Hesaplanmış veriler, izlenebilir kanıtlar ve kaynaklı yorumlar")
 
 @st.cache_resource
 def query_engine():
-    return QueryAgent(db_uri=f"sqlite:///{DATABASE}")
+    db, uri, dialect = get_database_connection()
+    return QueryAgent(db_uri=uri, dialect=dialect, db=db)
 
 
 @st.cache_resource
 def analysis_engine(fast_model, reasoning_model):
     _, _, documents, query, rewrite, synthesis = get_hybrid_agent(
-        db_uri=f"sqlite:///{DATABASE}", fast_model=fast_model, reasoning_model=reasoning_model)
+        fast_model=fast_model, reasoning_model=reasoning_model)
     return AnalysisService(query, rewrite, synthesis, documents)
 
 
 @st.cache_data(ttl=60)
 def catalog_data():
     return dataset_catalog(query_engine())
+
+
+@st.cache_data(ttl=60)
+def selected_periods(table):
+    return query_engine().periods(table)
+
+
+def typed_value(value, dtype):
+    import re
+    if "Int" in dtype:
+        return int(value)
+    if "Float" in dtype or "Decimal" in dtype:
+        return float(value)
+    if "Bool" in dtype:
+        if value.lower() not in {"true", "false", "0", "1"}:
+            raise ValueError("Bool filtresi true/false veya 0/1 olmalıdır.")
+        return value.lower() in {"true", "1"}
+    return value
 
 
 def service():
@@ -81,7 +100,10 @@ def render_result(result, key):
             fig = px.line(frame.sort_values(dimension), x=dimension, y=metric, markers=True)
             fig.update_xaxes(type="category")
         else:
-            fig = px.bar(frame, x=dimension, y=metric,
+            plot_frame = frame.copy()
+            for name in dimensions:
+                plot_frame[name] = plot_frame[name].map(lambda value: json.dumps(value,ensure_ascii=False,default=str) if isinstance(value,(list,dict)) else value)
+            fig = px.bar(plot_frame, x=dimension, y=metric,
                          color=dimensions[1] if len(dimensions)>1 and dimensions[1]!=dimension else None,
                          barmode="group")
         fig.update_layout(yaxis_title=f"{metric} ({unit})")
@@ -95,7 +117,10 @@ def render_result(result, key):
             st.dataframe(shares, hide_index=True, width="stretch")
     if len(dimensions)>=2 and metrics and not frame.empty:
         with st.expander("Çapraz tablo"):
-            cross = frame.pivot_table(index=dimensions[0], columns=dimensions[1], values=metrics[0], aggfunc="sum", fill_value=0)
+            pivot_frame = frame.copy()
+            for name in dimensions:
+                pivot_frame[name] = pivot_frame[name].map(lambda value: json.dumps(value,ensure_ascii=False,default=str) if isinstance(value,(list,dict)) else value)
+            cross = pivot_frame.pivot_table(index=dimensions[0], columns=dimensions[1], values=metrics[0], aggfunc="sum", fill_value=0)
             st.dataframe(cross, width="stretch")
     with st.expander("İstatistik ve veri kalitesi"):
         st.caption("Bu özet gösterilen sonuç satırlarına aittir; gruplanmış sayıların ortalaması ham gözlem ortalaması değildir.")
@@ -125,21 +150,30 @@ def render_answer(answer, key):
             render_result(result, f"{key}_{i}")
 
 
-profile = st.sidebar.selectbox("Model profili", ["Hibrit", "Tasarruf", "Hassasiyet"])
+profile = st.sidebar.selectbox("Model profili", ["Hibrit", "Tasarruf", "Hassasiyet", "Özel"])
 fast_model = "gpt-4o" if profile == "Hassasiyet" else "gpt-4o-mini"
 reasoning_model = "gpt-4o-mini" if profile == "Tasarruf" else "gpt-4o"
+if profile == "Özel":
+    fast_model = st.sidebar.selectbox("Sorgu modeli", ["gpt-4o-mini","gpt-4o"])
+    reasoning_model = st.sidebar.selectbox("Sentez modeli", ["gpt-4o","gpt-4o-mini"])
 mode = st.sidebar.radio("Çalışma modu", MODES)
 source_name = st.sidebar.selectbox("Analiz kaynağı", list(SOURCE_OPTIONS))
 source = SOURCE_OPTIONS[source_name]
-st.sidebar.caption("SQL salt okunur; en fazla 1.000 sonuç satırı. Belgeler için Pinecone bağlantısı gerekir.")
+st.sidebar.caption("Veri erişimi salt okunur; en fazla 1.000 sonuç satırı. Belgeler için Pinecone bağlantısı gerekir.")
 try:
     catalog = catalog_data()
 except Exception as exc:
     st.error(public_error(exc))
     st.stop()
+active_backend = query_engine().backend
+st.caption("Aktif veri kaynağı: " + ("ClickHouse" if active_backend.dialect == "clickhouse" else "SQLite"))
+if getattr(active_backend, "tls_verification_disabled", False):
+    st.warning("ClickHouse TLS sertifika doğrulaması mevcut yapılandırmada kapalı. Geçerli CA sertifikasıyla CLICKHOUSE_VERIFY=true kullanılması önerilir.")
+if active_backend.fallback:
+    st.warning("ClickHouse bağlantısı başarısız. ALLOW_SQLITE_FALLBACK açık olduğu için SQLite yedek verisi gösteriliyor; üretim verisi değildir.")
 periods = sorted({p for item in catalog.values() for p in item["periods"]})
-st.caption("Veri dönemleri: " + (", ".join(str(p) for p in periods) if periods else "Dönem bilgisi yok"))
-if len(periods)<2:
+st.caption("Yerel veri dönemleri: " + ", ".join(str(p) for p in periods)) if periods else None
+if active_backend.dialect == "sqlite" and len(periods)<2:
     st.info("Mevcut veride çok dönemli trend analizi yapılamıyor. Eksik dönem, sıfır gözlem anlamına gelmez.")
 with st.sidebar.expander("Veri kataloğu"):
     st.dataframe(pd.DataFrame([{"Tablo": table, "Kayıt": info["row_count"], "Dönem": ", ".join(map(str, info["periods"]))}
@@ -173,23 +207,27 @@ if mode == MODES[4]:
         metrics = {"Kayıt sayısı": "records"}
         if "tweet_id" in info["columns"]:
             metrics["Farklı tweet sayısı"] = "tweets"
-        if "user_id" in info["columns"] or "author_id" in info["columns"]:
+        if any(name in info["columns"] for name in ("user_id", "author_id", "id")):
             metrics["Farklı kullanıcı sayısı"] = "users"
         if "volume" in info["columns"]:
             metrics["Toplam hacim"] = "volume"
         metric = metrics[st.selectbox("Metrik", list(metrics))]
-        period = st.selectbox("Dönem filtresi", ["Tümü", *info["periods"]])
+        try:
+            period_options = selected_periods(table)
+        except Exception as exc:
+            period_options = []
+            st.warning(public_error(exc))
+        period = st.selectbox("Dönem filtresi", ["Tümü", *period_options])
+        expand_arrays = st.checkbox("Dizi etiketlerini ayrı satırlara aç") if any(info["types"][c].startswith("Array(") for c in groups) else False
         limit = st.number_input("Satır sınırı", min_value=1, max_value=1000, value=200)
         filter_column = st.selectbox("Ek filtre sütunu", ["Yok", *info["columns"]])
         filter_value = st.text_input("Filtre değeri (tam eşleşme)") if filter_column != "Yok" else ""
         if st.button("Tabloyu oluştur"):
             try:
-                filters = []
-                if period != "Tümü":
-                    filters.append({"column": "prediction_month", "op": "EQ", "value": period})
+                filters = period_filters(info, period)
                 if filter_column != "Yok":
-                    filters.append({"column": filter_column, "op": "EQ", "value": filter_value})
-                result = query.execute_plan(table_plan(table, groups, metric, filters, int(limit)), f"{table}: {metric}")
+                    filters.append({"column": filter_column, "op": "HAS" if info["types"][filter_column].startswith("Array(") else "EQ", "value": typed_value(filter_value,info["types"][filter_column])})
+                result = query.execute_plan(table_plan(table, groups, metric, filters, int(limit),info,expand_arrays), f"{table}: {metric}")
                 st.session_state.answers["builder"] = result
             except Exception as exc:
                 st.session_state.answers.pop("builder", None)
@@ -209,16 +247,31 @@ if mode == MODES[4]:
             st.dataframe(frame, hide_index=True, width="stretch")
             downloads(frame, "quality")
     else:
-        st.caption("Yaş/cinsiyet ile duygu/yolculuk etiketi arasındaki ilişki. Her kullanıcı tek gözlemle temsil edilir; tekrarlı kayıtlar dışlanır.")
-        table = st.selectbox("Karşılaştırma verisi", ["emotion_analysis", "consumer_journey"])
-        dimension = st.selectbox("Demografik kırılım", ["age_group", "gender"])
-        period = st.selectbox("Karşılaştırma dönemi", catalog[table]["periods"] or [None])
+        st.caption("Bağımsız analiz birimini ve karşılaştırma alanlarını seçin. Çoklu kayıt veya çoklu etiket taşıyan birimler dışlanır.")
+        table = st.selectbox("Karşılaştırma verisi", list(catalog))
+        info = catalog[table]
+        unit = st.selectbox("Bağımsız analiz birimi anahtarı", info["columns"])
+        outcome = st.selectbox("Sonuç / etiket sütunu", info["columns"])
+        dimension_table = st.selectbox("Demografik / grup tablosu", list(catalog))
+        dimension_info = catalog[dimension_table]
+        dimension = st.selectbox("Grup sütunu", [c for c in dimension_info["columns"] if not dimension_info["types"][c].startswith("Array(")])
+        join_key = st.selectbox("Grup tablosu eşleşme anahtarı", dimension_info["columns"]) if dimension_table != table else unit
+        try:
+            period_options = selected_periods(table)
+        except Exception as exc:
+            period_options = []
+            st.warning(public_error(exc))
+        period = st.selectbox("Karşılaştırma dönemi", ["Tümü", *period_options])
+        task = st.text_input("Görev filtresi (task_name, isteğe bağlı)") if "task_name" in info["columns"] else ""
         if st.button("İstatistiksel testi çalıştır"):
             try:
-                cross, test = independent_user_comparison(query, table, dimension, period)
-                st.session_state.answers["statistical"] = (cross, test)
+                filters = period_filters(info,period)
+                if task:
+                    filters.append({"column":"task_name","op":"EQ","value":task})
+                cross,test = independent_comparison(query,table,dimension_table,unit,join_key,dimension,outcome,filters)
+                st.session_state.answers["statistical"] = (cross,test)
             except Exception as exc:
-                st.session_state.answers.pop("statistical", None)
+                st.session_state.answers.pop("statistical",None)
                 st.error(public_error(exc))
         if "statistical" in st.session_state.answers:
             cross, test = st.session_state.answers["statistical"]
@@ -229,7 +282,7 @@ if mode == MODES[4]:
                 left.metric("p-değeri", f"{test['p_value']:.6g}")
                 effect = test.get("cramers_v_corrected")
                 middle.metric("Cramér V (düzeltilmiş)", f"{effect:.4f}" if effect is not None else "—")
-                right.metric("Analize alınan kullanıcı", test["n"])
+                right.metric("Analize alınan birim", test["n"])
                 st.info(test["interpretation"] + ". " + test["warning"])
                 if "proportion_difference" in test:
                     low, high = test["difference_ci95"]
